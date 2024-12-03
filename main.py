@@ -4,6 +4,7 @@ import signal
 from publish import publish_messages
 from subscribe import subscribe_to_messages
 from chart_plotter import plotter, update_data
+from writer import write_to_file
 from bt import bt_setup
 
 message_queue = asyncio.Queue()
@@ -16,7 +17,9 @@ async def main():
         publish_messages(message_queue, parsed_bt_queue, shutdown_event)
     )
     subscriber_task = asyncio.create_task(
-        subscribe_to_messages(message_queue, shutdown_event, [update_data])
+        subscribe_to_messages(
+            message_queue, shutdown_event, [update_data, write_to_file]
+        )
     )
 
     await bt_setup(parsed_bt_queue)
