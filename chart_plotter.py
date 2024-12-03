@@ -14,7 +14,6 @@ def plotter(shutdown_event):
         if not plotting_queue.empty():
             message = plotting_queue.get_nowait()
 
-            print(f"rxd message {message}")
             x_data += list(
                 range(data_counter, data_counter + len(message))
             )  # Adjust X-axis to extend

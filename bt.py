@@ -41,7 +41,6 @@ def decode_packet_24bit(packet: bytearray) -> list[int]:
 
 def simple_handle_rx(characterictic, data):
     # len_queue.append(len(data))
-    print("rx")
     decoded = decode_packet_24bit(data)
     parsed_bt_queue.put_nowait(decoded)
 
