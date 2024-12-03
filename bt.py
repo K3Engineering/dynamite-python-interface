@@ -1,4 +1,6 @@
 import asyncio
+from collections import deque
+import math
 import random
 from bleak import BleakScanner, BleakClient
 
@@ -8,6 +10,8 @@ CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 client = None
 parsed_bt_queue = None
+
+len_queue = deque()
 
 
 class MockBleakClient:
@@ -94,12 +98,52 @@ def decode_packet_24bit(packet: bytearray) -> list[int]:
 
 
 def simple_handle_rx(characterictic, data):
-    # len_queue.append(len(data))
+    len_queue.append(len(data))
     decoded = decode_packet_24bit(data)
     parsed_bt_queue.put_nowait(decoded)
 
 
-async def bt_setup(queue, mock=True):
+async def print_count_stats_per_second(event):
+    while True:
+        count = len(len_queue)
+
+        min_count = math.inf
+        max_count = -math.inf
+        avg_count = 0
+        sum_count = 0
+
+        valuable_count = 0
+
+        for _ in range(count):
+            temp_len = len_queue.pop()
+
+            min_count = min(min_count, temp_len)
+            max_count = max(max_count, temp_len)
+            avg_count += temp_len / count
+            sum_count += temp_len
+
+            temp_len -= 4
+            valuable_count += temp_len / 10
+
+        print(
+            f"Received {count} BT packets, min {min_count} bytes/packet, max {max_count} bytes/packet, avg {avg_count:.2f} bytes/packet, sum {sum_count} bytes"
+        )
+
+        await event.wait()
+        event.clear()
+
+
+async def timer_task_f(event):
+    while True:
+        await asyncio.sleep(1)
+        event.set()
+
+
+async def bt_setup(queue, mock=False):
+    timer_event = asyncio.Event()
+    asyncio.create_task(timer_task_f(timer_event))
+    asyncio.create_task(print_count_stats_per_second(timer_event))
+
     global parsed_bt_queue
 
     if not mock:
