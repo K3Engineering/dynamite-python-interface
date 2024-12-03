@@ -12,7 +12,7 @@ async def subscribe_to_messages(
             message = await asyncio.wait_for(message_queue.get(), timeout=0.5)
             if data_callback:
                 data_callback(message)
-            print(f'Received: {message.decode("utf-8")}')
+            print(f"Received: {message}")
         except asyncio.TimeoutError:
             continue  # timeout, check for shutdown
 
