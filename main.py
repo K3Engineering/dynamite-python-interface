@@ -16,7 +16,7 @@ async def main():
         publish_messages(message_queue, parsed_bt_queue, shutdown_event)
     )
     subscriber_task = asyncio.create_task(
-        subscribe_to_messages(message_queue, shutdown_event, update_data)
+        subscribe_to_messages(message_queue, shutdown_event, [update_data])
     )
 
     await bt_setup(parsed_bt_queue)
