@@ -5,6 +5,7 @@ SERVICE_UUID = "e331016b-6618-4f8f-8997-1a2c7c9e5fa3"
 CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 client = None
+parsed_bt_queue = None
 
 
 async def find_bluetooth_devices():
@@ -39,16 +40,21 @@ def decode_packet_24bit(packet: bytearray) -> list[int]:
 
 
 def simple_handle_rx(characterictic, data):
-    # data_queue.append(data)
     # len_queue.append(len(data))
     print("rx")
+    decoded = decode_packet_24bit(data)
+    parsed_bt_queue.put_nowait(decoded)
 
 
-async def bt_setup(parsed_bt_queue):
+async def bt_setup(queue):
+    global parsed_bt_queue
+
     mydevice = await find_bluetooth_devices()
     if not mydevice:
         print("No device found")
         return
+
+    parsed_bt_queue = queue
 
     client = BleakClient(mydevice, timeout=10)
     await client.connect()
