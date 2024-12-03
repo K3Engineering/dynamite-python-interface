@@ -4,7 +4,9 @@ from datetime import datetime, timedelta
 
 async def publish_messages(message_queue, parsed_bt_queue, shutdown_event):
     buffer = []
-    next_push_time = datetime.now() + timedelta(seconds=1)
+    next_push_time = datetime.now() + timedelta(
+        milliseconds=300
+    )  # this affects plotting speed
 
     while not shutdown_event.is_set():
         try:
@@ -19,7 +21,7 @@ async def publish_messages(message_queue, parsed_bt_queue, shutdown_event):
             if buffer:  # Only push if there are messages
                 await message_queue.put(buffer)
                 buffer = []  # Clear the buffer
-            next_push_time = datetime.now() + timedelta(seconds=1)
+            next_push_time = datetime.now() + timedelta(milliseconds=300)
 
     # Handle remaining messages in the buffer during shutdown
     if buffer:

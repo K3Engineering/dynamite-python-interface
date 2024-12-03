@@ -17,7 +17,11 @@ def plotter(shutdown_event):
             x_data += list(
                 range(data_counter, data_counter + len(message))
             )  # Adjust X-axis to extend
-            y_data += message  # Append new Y-axis data
+            y_data += message
+
+            x_data = x_data[(-2000 * 4) :]
+            y_data = y_data[(-2000 * 4) :]
+
             data_counter += len(message)  # Update counter for next X-axis range
 
             ax.clear()
