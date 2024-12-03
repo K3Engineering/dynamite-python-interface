@@ -1,7 +1,13 @@
 from matplotlib import pyplot as plt
 from queue import Queue
+from datetime import datetime, timedelta
 
 plotting_queue = Queue()
+
+buffer = []
+next_push_time = datetime.now() + timedelta(
+    milliseconds=300
+)  # this affects plotting speed
 
 
 def plotter(shutdown_event):
@@ -38,4 +44,16 @@ def plotter(shutdown_event):
 
 
 def update_data(data: list):
-    plotting_queue.put(data)
+    global next_push_time
+    global plotting_queue
+    global buffer
+
+    # plotting_queue.put(data)
+
+    buffer.extend(data)
+
+    if datetime.now() >= next_push_time:
+        plotting_queue.put(buffer)
+
+        buffer = []  # Clear the buffer
+        next_push_time = datetime.now() + timedelta(milliseconds=300)

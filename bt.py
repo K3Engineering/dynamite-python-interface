@@ -1,3 +1,5 @@
+import asyncio
+import random
 from bleak import BleakScanner, BleakClient
 
 GATT_UUID = "a659ee73-460b-45d5-8e63-ab6bf0825942"
@@ -6,6 +8,49 @@ CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
 client = None
 parsed_bt_queue = None
+
+
+class MockBleakClient:
+    def __init__(self, device, timeout=10):
+        self.device = device
+        self.timeout = timeout
+        self.connected = False
+        self.characteristic_uuid = None
+        self.notify_callback = None
+
+    async def connect(self):
+        print(f"Mock connecting to device: {self.device.name}")
+        self.connected = True
+
+    async def disconnect(self):
+        print(f"Mock disconnecting from device: {self.device.name}")
+        self.connected = False
+
+    async def start_notify(self, characteristic_uuid, callback):
+        print(f"Mock starting notifications for characteristic: {characteristic_uuid}")
+        self.characteristic_uuid = characteristic_uuid
+        self.notify_callback = callback
+        asyncio.create_task(self.mock_notify_loop())  # Simulate notification in a loop
+
+    async def stop_notify(self, characteristic_uuid):
+        print(f"Mock stopping notifications for characteristic: {characteristic_uuid}")
+        self.characteristic_uuid = None
+        self.notify_callback = None
+
+    async def mock_notify_loop(self):
+        # Generate random data periodically
+        while self.connected:
+            if self.notify_callback:
+                random_data = bytearray(
+                    [random.randint(0, 255) for _ in range(12)]
+                )  # Simulate 12 random bytes
+                self.notify_callback(self.characteristic_uuid, random_data)
+            await asyncio.sleep(1)  # Adjust frequency as needed
+
+
+class MockDevice:
+    def __init__(self, name):
+        self.name = name
 
 
 async def find_bluetooth_devices():
@@ -20,6 +65,15 @@ async def find_bluetooth_devices():
             mydevice = d
 
     return mydevice
+
+
+async def mock_find_bluetooth_devices():
+    # Return a list of mock devices
+    mock_devices = [MockDevice(name="09876543"), MockDevice(name="OtherDevice")]
+    print("Mock found the following devices:")
+    for d in mock_devices:
+        print(f"Device name: {d.name}")
+    return next((d for d in mock_devices if d.name == "09876543"), None)
 
 
 def decode_packet_24bit(packet: bytearray) -> list[int]:
@@ -45,17 +99,23 @@ def simple_handle_rx(characterictic, data):
     parsed_bt_queue.put_nowait(decoded)
 
 
-async def bt_setup(queue):
+async def bt_setup(queue, mock=True):
     global parsed_bt_queue
 
-    mydevice = await find_bluetooth_devices()
+    if not mock:
+        mydevice = await find_bluetooth_devices()
+    else:
+        mydevice = await mock_find_bluetooth_devices()
     if not mydevice:
         print("No device found")
         return
 
     parsed_bt_queue = queue
 
-    client = BleakClient(mydevice, timeout=10)
+    if not mock:
+        client = BleakClient(mydevice, timeout=10)
+    else:
+        client = MockBleakClient(mydevice, timeout=10)
     await client.connect()
     await client.start_notify(CHARACTERISTIC_UUID, simple_handle_rx)
     print("finished bt setup")
