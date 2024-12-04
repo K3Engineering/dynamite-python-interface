@@ -1,6 +1,7 @@
 from matplotlib import pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
+import numpy as np
 
 from queue import Queue
 from datetime import datetime, timedelta
@@ -51,11 +52,41 @@ def plotter(shutdown_event):
             # Clear and update the histogram
             ax_hist.clear()
             ax_hist.hist(
-                y_data, bins=30, orientation="horizontal", color="gray", alpha=0.7
+                y_data,
+                bins=100,
+                orientation="horizontal",
+                alpha=0.7,
+                density=True,
             )
             ax_hist.set_ylabel("ADC Values")  # Shares the same y-axis
             ax_hist.set_xlabel("Frequency")
             ax_hist.set_title("Distribution")
+
+            # Calculate mean and standard deviation
+            mean = np.mean(y_data)
+            std = np.std(y_data)
+
+            # Generate data for Gaussian curve
+            y_range = np.linspace(min(y_data), max(y_data), 100)
+            gaussian = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(
+                -0.5 * ((y_range - mean) / std) ** 2
+            )
+            gaussian_scaled = gaussian
+
+            # Plot Gaussian curve
+            ax_hist.plot(gaussian_scaled, y_range, color="red", label="Gaussian Fit")
+            ax_hist.text(
+                0.95,
+                0.95,
+                f"Mean: {mean:.2f}\nStd: {std:.2f}",
+                transform=ax_hist.transAxes,
+                fontsize=10,
+                verticalalignment="top",
+                horizontalalignment="right",
+                bbox=dict(facecolor="white", alpha=0.8, edgecolor="gray"),
+            )
+
+            ax_hist.legend()
 
             plt.tight_layout()
             plt.draw()
