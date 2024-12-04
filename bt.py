@@ -18,17 +18,17 @@ class MockBleakClient:
     def __init__(self, device, timeout=10):
         self.device = device
         self.timeout = timeout
-        self.connected = False
+        self.is_connected = False
         self.characteristic_uuid = None
         self.notify_callback = None
 
     async def connect(self):
         print(f"Mock connecting to device: {self.device.name}")
-        self.connected = True
+        self.is_connected = True
 
     async def disconnect(self):
         print(f"Mock disconnecting from device: {self.device.name}")
-        self.connected = False
+        self.is_connected = False
 
     async def start_notify(self, characteristic_uuid, callback):
         print(f"Mock starting notifications for characteristic: {characteristic_uuid}")
@@ -43,7 +43,7 @@ class MockBleakClient:
 
     async def mock_notify_loop(self):
         # Generate random data periodically
-        while self.connected:
+        while self.is_connected:
             if self.notify_callback:
                 random_data = bytearray(
                     [random.randint(0, 255) for _ in range(12)]
@@ -139,7 +139,16 @@ async def timer_task_f(event):
         event.set()
 
 
-async def bt_setup(queue, mock=False):
+async def wait_for_shutdown(shutdown_event, client):
+    while not shutdown_event.is_set():
+        await asyncio.sleep(0.1)
+
+    print("Disconnecting bt")
+    if client.is_connected:
+        await client.disconnect()
+
+
+async def bt_setup(queue, shutdown_event, mock=False):
     timer_event = asyncio.Event()
     asyncio.create_task(timer_task_f(timer_event))
     asyncio.create_task(print_count_stats_per_second(timer_event))
@@ -162,6 +171,8 @@ async def bt_setup(queue, mock=False):
         client = MockBleakClient(mydevice, timeout=10)
     await client.connect()
     await client.start_notify(CHARACTERISTIC_UUID, simple_handle_rx)
+
+    asyncio.create_task(wait_for_shutdown(shutdown_event, client))
     print("finished bt setup")
 
     # TODO disconnect function

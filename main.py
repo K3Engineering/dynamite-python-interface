@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import signal
+from time import sleep
 from publish import publish_messages
 from subscribe import subscribe_to_messages
 from chart_plotter import plotter, update_data
@@ -22,7 +23,7 @@ async def main():
         )
     )
 
-    await bt_setup(parsed_bt_queue)
+    await bt_setup(parsed_bt_queue, shutdown_event)
 
     await asyncio.gather(publisher_task, subscriber_task, return_exceptions=True)
 
@@ -46,3 +47,4 @@ if __name__ == "__main__":
     t.start()
     plotter(shutdown_event)
     t.join()
+    sleep(0.2)
