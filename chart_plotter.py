@@ -13,6 +13,22 @@ next_push_time = datetime.now() + timedelta(
     milliseconds=300
 )  # this affects plotting speed
 
+# Load cell constants
+GAIN = 32
+FSR = 1.2 / GAIN
+RESOLUTION_BITS = 23
+MICROVOLT_CONVERSION = FSR / (2**RESOLUTION_BITS) * 1000 * 1000
+LC_volts = 2
+
+
+# define conversion functions
+def raw_to_microvolts(raw_value):
+    return raw_value * MICROVOLT_CONVERSION
+
+
+def microvolts_to_kilograms(uV_value):
+    return uV_value * 200 * 1000 / 2 / LC_volts / 1000 / 1000
+
 
 def plotter(shutdown_event):
     plt.ion()
