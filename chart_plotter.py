@@ -18,7 +18,8 @@ GAIN = 32
 FSR = 1.2 / GAIN
 RESOLUTION_BITS = 23
 MICROVOLT_CONVERSION = FSR / (2**RESOLUTION_BITS) * 1000 * 1000
-LC_volts = 2
+LC_VOLTS = 2
+SAMPLE_RATE = 2000
 
 
 # define conversion functions
@@ -27,7 +28,7 @@ def raw_to_microvolts(raw_value):
 
 
 def microvolts_to_kilograms(uV_value):
-    return uV_value * 200 * 1000 / 2 / LC_volts / 1000 / 1000
+    return uV_value * 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000
 
 
 def plotter(shutdown_event):
@@ -36,8 +37,9 @@ def plotter(shutdown_event):
     # Use gridspec for arranging main plot and histogram
     fig = plt.figure(figsize=(8, 6))
     gs = gridspec.GridSpec(1, 2, width_ratios=[4, 1])  # Main plot larger than histogram
-    ax = fig.add_subplot(gs[0])  # Main plot
-    ax_hist = fig.add_subplot(gs[1], sharey=ax)  # Histogram
+    ax1 = fig.add_subplot(gs[0])  # Main plot
+    ax2 = ax1.twiny()
+    ax_hist = fig.add_subplot(gs[1], sharey=ax1)  # Histogram
 
     x_data, y_data = [], []
     data_counter = 0  # Track the total number of data points for the X-axis
@@ -59,11 +61,22 @@ def plotter(shutdown_event):
             data_counter += len(message)  # Update counter for next X-axis range
 
             # Clear and update the main plot
-            ax.clear()
-            ax.plot(x_data, y_data)
-            ax.set_xlabel("X")
-            ax.set_ylabel("ADC Values")
-            ax.set_title("Real-time Data Plot")
+            ax1.clear()
+            ax1.plot(x_data, y_data)
+            ax1.set_xlabel("X")
+            ax1.set_ylabel("ADC Values")
+            ax1.set_title("Real-time Data Plot")
+
+            # Secondary X-axis (Time in Seconds)
+            ax2.clear()
+            ax2.set_xlim(ax1.get_xlim())  # Synchronize with the sample number axis
+            ax2.set_xlabel("Time (seconds)")
+            ax2.xaxis.set_label_position("top")
+            time_ticks = np.array(x_data[::500])  # Adjust tick density
+            ax2.set_xticks(time_ticks)
+            ax2.set_xticklabels(
+                (time_ticks / SAMPLE_RATE).round(2)
+            )  # Convert to seconds with 2 decimal places
 
             # Clear and update the histogram
             ax_hist.clear()

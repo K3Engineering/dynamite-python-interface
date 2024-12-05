@@ -46,10 +46,10 @@ class MockBleakClient:
         while self.is_connected:
             if self.notify_callback:
                 random_data = bytearray(
-                    [random.randint(0, 255) for _ in range(12)]
+                    [random.randint(0, 255) for _ in range(67 * 3)]
                 )  # Simulate 12 random bytes
                 self.notify_callback(self.characteristic_uuid, random_data)
-            await asyncio.sleep(1)  # Adjust frequency as needed
+            await asyncio.sleep(1 / 14)  # Adjust frequency as needed
 
 
 class MockDevice:
