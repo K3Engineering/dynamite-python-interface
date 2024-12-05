@@ -81,9 +81,7 @@ def plotter(shutdown_event):
             ax3.yaxis.set_label_position("right")
             ax3.set_ylim(ax1.get_ylim())  # Ensure synchronization
             ax3.set_yticks(ax1.get_yticks())
-            ax3.set_yticklabels(
-                (np.array(ax1.get_yticks()) * MICROVOLT_CONVERSION).round(2)
-            )
+            ax3.set_yticklabels((ax1.get_yticks() * MICROVOLT_CONVERSION).round(2))
 
             # Secondary Y-axis 2 (Kilograms)
             ax4.clear()
@@ -94,7 +92,7 @@ def plotter(shutdown_event):
             ax4.yaxis.set_label_position("right")
             ax4.set_ylim(ax1.get_ylim())  # Ensure synchronization
             ax4.set_yticks(ax1.get_yticks())
-            ax4.set_yticklabels((np.array(ax3.get_yticks()) * KG_CONVERSION).round(2))
+            ax4.set_yticklabels((ax3.get_yticks() * KG_CONVERSION).round(2))
 
             # Clear and update the histogram
             ax_hist.clear()
@@ -112,6 +110,10 @@ def plotter(shutdown_event):
             # Calculate mean and standard deviation
             mean = np.mean(y_data)
             std = np.std(y_data)
+            uV_mean = mean * MICROVOLT_CONVERSION
+            uV_std = std * MICROVOLT_CONVERSION
+            kg_mean = uV_mean * KG_CONVERSION
+            kg_std = uV_std * KG_CONVERSION
 
             # Generate data for Gaussian curve
             y_range = np.linspace(min(y_data), max(y_data), 100)
@@ -125,7 +127,9 @@ def plotter(shutdown_event):
             ax_hist.text(
                 0.95,
                 0.95,
-                f"Mean: {mean:.2f}\nStd: {std:.2f}",
+                f"Mean: {mean:.2f} ADC\nStd: {std:.2f} ADC\n\n"
+                f"Mean: {uV_mean:.2f} uV\nStd: {uV_std:.2f} uV\n\n"
+                f"Mean: {kg_mean:.2f} kg\nStd: {kg_std:.2f} kg",
                 transform=ax_hist.transAxes,
                 fontsize=10,
                 verticalalignment="top",
@@ -137,7 +141,7 @@ def plotter(shutdown_event):
 
             plt.tight_layout()
             plt.draw()
-            plt.pause(0.1)
+            # plt.pause(0.1)
 
         plt.pause(0.1)  # Small pause to prevent busy waiting.
 
