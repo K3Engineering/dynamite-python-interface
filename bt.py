@@ -64,7 +64,7 @@ async def find_bluetooth_devices():
     print("Found the following devices:")
     for d in devices:
         print(d)
-        if d.name == "09876543":
+        if d.name and d.name == "09876543":
             print("Found my device")
             mydevice = d
 
