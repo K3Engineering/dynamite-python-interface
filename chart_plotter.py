@@ -19,16 +19,8 @@ FSR = 1.2 / GAIN
 RESOLUTION_BITS = 23
 MICROVOLT_CONVERSION = FSR / (2**RESOLUTION_BITS) * 1000 * 1000
 LC_VOLTS = 2
+KG_CONVERSION = 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000 / 1000
 SAMPLE_RATE = 2000
-
-
-# define conversion functions
-def raw_to_microvolts(raw_value):
-    return raw_value * MICROVOLT_CONVERSION
-
-
-def microvolts_to_kilograms(uV_value):
-    return uV_value * 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000
 
 
 def plotter(shutdown_event):
@@ -39,6 +31,8 @@ def plotter(shutdown_event):
     gs = gridspec.GridSpec(1, 2, width_ratios=[4, 1])  # Main plot larger than histogram
     ax1 = fig.add_subplot(gs[0])  # Main plot
     ax2 = ax1.twiny()
+    ax3 = ax1.twinx()
+    ax4 = ax1.twinx()
     ax_hist = fig.add_subplot(gs[1], sharey=ax1)  # Histogram
 
     x_data, y_data = [], []
@@ -77,6 +71,30 @@ def plotter(shutdown_event):
             ax2.set_xticklabels(
                 (time_ticks / SAMPLE_RATE).round(2)
             )  # Convert to seconds with 2 decimal places
+
+            # Secondary Y-axis 1 (Microvolts)
+            ax3.clear()
+            ax3.spines["right"].set_position(
+                ("outward", 60)
+            )  # Offset the secondary Y-axis
+            ax3.set_ylabel("Microvolts (µV)")
+            ax3.yaxis.set_label_position("right")
+            ax3.set_ylim(ax1.get_ylim())  # Ensure synchronization
+            ax3.set_yticks(ax1.get_yticks())
+            ax3.set_yticklabels(
+                (np.array(ax1.get_yticks()) * MICROVOLT_CONVERSION).round(2)
+            )
+
+            # Secondary Y-axis 2 (Kilograms)
+            ax4.clear()
+            ax4.spines["right"].set_position(
+                ("outward", 120)
+            )  # Offset the tertiary Y-axis
+            ax4.set_ylabel("Kilograms (kg)")
+            ax4.yaxis.set_label_position("right")
+            ax4.set_ylim(ax1.get_ylim())  # Ensure synchronization
+            ax4.set_yticks(ax1.get_yticks())
+            ax4.set_yticklabels((np.array(ax3.get_yticks()) * KG_CONVERSION).round(2))
 
             # Clear and update the histogram
             ax_hist.clear()
