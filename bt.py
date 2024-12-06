@@ -64,7 +64,7 @@ async def find_bluetooth_devices():
     print("Found the following devices:")
     for d in devices:
         print(d)
-        if d.name and d.name == "09876543":
+        if d.name and "DS " in d.name:
             print("Found my device")
             mydevice = d
 
@@ -82,19 +82,43 @@ async def mock_find_bluetooth_devices():
 
 def decode_packet_24bit(packet: bytearray) -> list[int]:
     # Decode 24-bit values into signed integers
-    int_values = []
-    for i in range(0, len(packet), 3):
-        if i + 2 < len(packet):
-            int_value = (packet[i + 2] << 16) | (packet[i + 1] << 8) | packet[i]
+
+    # packet is 15 bytes. 2 bytes (status) + 4 * 3 bytes (channels) + 1 byte (CRC) = 15 bytes
+
+    assert len(packet) % 15 == 0
+
+    decoded_packets = []
+    for packet_start in range(0, len(packet), 15):
+        sub_packet = packet[packet_start : packet_start + 15]
+        status = (sub_packet[0] << 8) | sub_packet[1]
+
+        channels = []
+
+        for channel in range(4):
+            base_index = 2 + channel * 3
+            int_value = (
+                (sub_packet[base_index + 2] << 16)
+                | (sub_packet[base_index + 1] << 8)
+                | sub_packet[base_index]
+            )
 
             # Convert to signed 24-bit integer
             if int_value & (1 << 23):  # Check if the sign bit is set
                 int_value -= 1 << 24
 
-            int_values.append(int_value)
-        else:
-            print("malformed packet length")
-    return int_values
+            channels.append(int_value)
+
+        crc = sub_packet[14]
+
+        decoded_packets.append(
+            {
+                "status": status,
+                "channels": channels,
+                "crc": crc,
+            }
+        )
+
+    return decoded_packets
 
 
 def simple_handle_rx(characterictic, data):
