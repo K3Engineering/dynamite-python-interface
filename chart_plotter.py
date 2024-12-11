@@ -23,6 +23,28 @@ KG_CONVERSION = 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000 / 1000
 SAMPLE_RATE = 1000
 
 
+def gen_lowpass_filter_kernel():
+    # Configuration.
+    fL = 100  # Cutoff frequency.
+    N = 259  # Filter length, must be odd.
+
+    # Compute sinc filter.
+    h = np.sinc(2 * fL / SAMPLE_RATE * (np.arange(N) - (N - 1) / 2))
+
+    # Apply window.
+    h *= np.blackman(N)
+
+    # Normalize to get unity gain.
+    h /= np.sum(h)
+
+    return h
+
+
+def apply_filter(signal, kernel):
+    filtered = np.convolve(signal, kernel)
+    return filtered
+
+
 def plotter(shutdown_event):
     plt.ion()
 
@@ -37,6 +59,7 @@ def plotter(shutdown_event):
 
     x_data, y_data_3, y_data_2 = [], [], []
     data_counter = 0  # Track the total number of data points for the X-axis
+    kernel = gen_lowpass_filter_kernel()
 
     while not shutdown_event.is_set():
         if not plotting_queue.empty():
@@ -52,10 +75,21 @@ def plotter(shutdown_event):
             y_data_3 += ch3_data
             y_data_2 += ch2_data
 
+            # TODO run only on new data
+            assert len(y_data_2) == len(y_data_3)
+            if len(y_data_3) >= len(kernel):
+                filtered_y_data_3 = np.convolve(y_data_3, kernel, mode="same")
+                filtered_y_data_2 = np.convolve(y_data_2, kernel, mode="same")
+            else:
+                filtered_y_data_3 = y_data_3  # No filtering, just pass raw data
+                filtered_y_data_2 = y_data_2
+
             # Limit the data for both axes
             x_data = x_data[(-SAMPLE_RATE * 8) :]
             y_data_2 = y_data_2[(-SAMPLE_RATE * 8) :]
             y_data_3 = y_data_3[(-SAMPLE_RATE * 8) :]
+            filtered_y_data_2 = filtered_y_data_2[(-SAMPLE_RATE * 8) :]
+            filtered_y_data_3 = filtered_y_data_3[(-SAMPLE_RATE * 8) :]
 
             data_counter += len(message)  # Update counter for next X-axis range
 
@@ -63,6 +97,8 @@ def plotter(shutdown_event):
             ax1.clear()
             ax1.plot(x_data, y_data_3, label="ch3")
             ax1.plot(x_data, y_data_2, label="ch2")
+            ax1.plot(x_data, filtered_y_data_3, label="ch3 (filtered)")
+            ax1.plot(x_data, filtered_y_data_2, label="ch2 (filtered)")
             ax1.legend()
             ax1.set_xlabel("X")
             ax1.set_ylabel("ADC Values")
