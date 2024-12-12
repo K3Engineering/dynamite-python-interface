@@ -2,6 +2,7 @@ import asyncio
 import threading
 import signal
 from time import sleep
+from replay import replay_setup
 from subscribe import subscribe_to_messages
 from chart_plotter import plotter, update_data
 from writer import write_to_file
@@ -12,13 +13,23 @@ shutdown_event = threading.Event()
 
 
 async def main():
+    replay = True
+
+    subscribers = [update_data]
+
+    if not replay:
+        subscribers.append(write_to_file)
+
     subscriber_task = asyncio.create_task(
-        subscribe_to_messages(
-            parsed_bt_queue, shutdown_event, [update_data, write_to_file]
-        )
+        subscribe_to_messages(parsed_bt_queue, shutdown_event, subscribers)
     )
 
-    await bt_setup(parsed_bt_queue, shutdown_event)
+    if not replay:
+        await bt_setup(parsed_bt_queue, shutdown_event)
+    else:
+        await replay_setup(
+            "./data/datadump_20241212_123045.txt", parsed_bt_queue, shutdown_event
+        )
 
     await asyncio.gather(subscriber_task, return_exceptions=True)
 
