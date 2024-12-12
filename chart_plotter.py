@@ -23,6 +23,49 @@ KG_CONVERSION = 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000 / 1000
 SAMPLE_RATE = 1000
 
 
+def gen_lowpass_filter_kernel():
+    # Configuration.
+    fL = 100  # Cutoff frequency.
+    N = 259  # Filter length, must be odd.
+
+    # Compute sinc filter.
+    h = np.sinc(2 * fL / SAMPLE_RATE * (np.arange(N) - (N - 1) / 2))
+
+    # Apply window.
+    h *= np.blackman(N)
+
+    # Normalize to get unity gain.
+    h /= np.sum(h)
+
+    return h
+
+
+# Compute valid samples of a convolution based on incremental data
+class IncrementalConvolution:
+    def __init__(self, kernel):
+        self.kernel = kernel
+        self.y_data = []  # Storing the data
+        self.big_convolution = []  # Storing the convoluted result
+
+    def process(self, message: list):
+        self.y_data += message
+
+        valid_length = len(self.y_data) - len(self.kernel) + 1
+        to_compute_length = valid_length - len(self.big_convolution)
+
+        if to_compute_length > 0:
+            # mode='valid' outputs (signal - kernel + 1) size. We give it (signal - kernel + 1)
+            new_valid_part = np.convolve(
+                self.y_data[-to_compute_length - len(self.kernel) + 1 :],
+                self.kernel,
+                mode="valid",
+            )
+            self.big_convolution += list(new_valid_part)
+
+        # TODO: remove old data from y_data to keep only necessary part for next convolutions?
+        return self.big_convolution
+
+
 def plotter(shutdown_event):
     plt.ion()
 
@@ -37,6 +80,10 @@ def plotter(shutdown_event):
 
     x_data, y_data_3, y_data_2 = [], [], []
     data_counter = 0  # Track the total number of data points for the X-axis
+    kernel = gen_lowpass_filter_kernel()
+
+    ch3_filtered = IncrementalConvolution(kernel)
+    ch2_filtered = IncrementalConvolution(kernel)
 
     while not shutdown_event.is_set():
         if not plotting_queue.empty():
@@ -52,10 +99,21 @@ def plotter(shutdown_event):
             y_data_3 += ch3_data
             y_data_2 += ch2_data
 
+            assert len(y_data_2) == len(y_data_3)
+
+            ch3_filtered_data = ch3_filtered.process(ch3_data)
+            ch2_filtered_data = ch2_filtered.process(ch2_data)
+
             # Limit the data for both axes
             x_data = x_data[(-SAMPLE_RATE * 8) :]
             y_data_2 = y_data_2[(-SAMPLE_RATE * 8) :]
             y_data_3 = y_data_3[(-SAMPLE_RATE * 8) :]
+
+            ch3_filtered_section = ch3_filtered_data[x_data[0] :]
+            ch2_filtered_section = ch2_filtered_data[x_data[0] :]
+            x_filtered = (
+                np.array(x_data[: len(ch3_filtered_section)]) + len(kernel) // 2
+            )  # fix offset
 
             data_counter += len(message)  # Update counter for next X-axis range
 
@@ -63,6 +121,8 @@ def plotter(shutdown_event):
             ax1.clear()
             ax1.plot(x_data, y_data_3, label="ch3")
             ax1.plot(x_data, y_data_2, label="ch2")
+            ax1.plot(x_filtered, ch3_filtered_section, label="ch3 (filtered)")
+            ax1.plot(x_filtered, ch2_filtered_section, label="ch2 (filtered)")
             ax1.legend()
             ax1.set_xlabel("X")
             ax1.set_ylabel("ADC Values")
