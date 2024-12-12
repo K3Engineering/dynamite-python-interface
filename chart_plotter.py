@@ -21,6 +21,7 @@ MICROVOLT_CONVERSION = FSR / (2**RESOLUTION_BITS) * 1000 * 1000
 LC_VOLTS = 2
 KG_CONVERSION = 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000 / 1000
 SAMPLE_RATE = 1000
+TARING_THRESHOLD = 1.0  # uV value
 
 
 def gen_lowpass_filter_kernel():
@@ -84,6 +85,9 @@ def plotter(shutdown_event):
 
     ch3_filtered = IncrementalConvolution(kernel)
     ch2_filtered = IncrementalConvolution(kernel)
+
+    tared = False  # Initial state of taring
+    tare_offset = [0, 0]
 
     while not shutdown_event.is_set():
         if not plotting_queue.empty():
@@ -170,24 +174,48 @@ def plotter(shutdown_event):
                 alpha=0.7,
                 density=True,
             )
+            ax_hist.hist(
+                y_data_2,
+                bins=100,
+                orientation="horizontal",
+                alpha=0.7,
+                density=True,
+            )
             ax_hist.set_ylabel("ADC Values")  # Shares the same y-axis
             ax_hist.set_xlabel("Frequency")
             ax_hist.set_title("Distribution")
 
             # Calculate mean and standard deviation
-            mean = np.mean(y_data_3)
-            std = np.std(y_data_3)
-            uV_mean = mean * MICROVOLT_CONVERSION
-            uV_std = std * MICROVOLT_CONVERSION
-            kg_mean = uV_mean * KG_CONVERSION
-            kg_std = uV_std * KG_CONVERSION
+            mean_ch3 = np.mean(y_data_3)
+            std_ch3 = np.std(y_data_3)
+            uV_mean_ch3 = mean_ch3 * MICROVOLT_CONVERSION
+            uV_std_ch3 = std_ch3 * MICROVOLT_CONVERSION
+            kg_mean_ch3 = uV_mean_ch3 * KG_CONVERSION
+            kg_std_ch3 = uV_std_ch3 * KG_CONVERSION
+
+            mean_ch2 = np.mean(y_data_2)
+            std_ch2 = np.std(y_data_2)
+            uV_mean_ch2 = mean_ch2 * MICROVOLT_CONVERSION
+            uV_std_ch2 = std_ch2 * MICROVOLT_CONVERSION
+            kg_mean_ch2 = uV_mean_ch2 * KG_CONVERSION
+            kg_std_ch2 = uV_std_ch2 * KG_CONVERSION
+
+            if (
+                uV_std_ch2 < TARING_THRESHOLD
+                and uV_std_ch3 < TARING_THRESHOLD
+                and len(x_data) > SAMPLE_RATE * 2
+            ):
+                if not tared:
+                    tare_offset = [mean_ch2, mean_ch3]
+                    tared = True
+                    print("Tared")
 
             eps = 1e-8
 
             # Generate data for Gaussian curve
             y_range = np.linspace(min(y_data_3), max(y_data_3), 100)
-            gaussian = (1 / ((std + eps) * np.sqrt(2 * np.pi))) * np.exp(
-                -0.5 * ((y_range - mean) / std) ** 2
+            gaussian = (1 / ((std_ch3 + eps) * np.sqrt(2 * np.pi))) * np.exp(
+                -0.5 * ((y_range - mean_ch3) / std_ch3) ** 2
             )
             gaussian_scaled = gaussian
 
@@ -196,9 +224,9 @@ def plotter(shutdown_event):
             ax_hist.text(
                 0.95,
                 0.95,
-                f"Mean: {mean:.2f} ADC\nStd: {std:.2f} ADC\n\n"
-                f"Mean: {uV_mean:.2f} uV\nStd: {uV_std:.2f} uV\n\n"
-                f"Mean: {kg_mean:.2f} kg\nStd: {kg_std:.2f} kg",
+                f"Mean: {mean_ch3:.2f} ADC\nStd: {std_ch3:.2f} ADC\n\n"
+                f"Mean: {uV_mean_ch3:.2f} uV\nStd: {uV_std_ch3:.2f} uV\n\n"
+                f"Mean: {kg_mean_ch3:.2f} kg\nStd: {kg_std_ch3:.2f} kg",
                 transform=ax_hist.transAxes,
                 fontsize=10,
                 verticalalignment="top",
