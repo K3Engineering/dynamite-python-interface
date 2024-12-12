@@ -28,7 +28,9 @@ async def main():
         await bt_setup(parsed_bt_queue, shutdown_event)
     else:
         await replay_setup(
-            "./data/datadump_20241212_123045.txt", parsed_bt_queue, shutdown_event
+            "./sample_data/datadump_20241212_123045.txt",
+            parsed_bt_queue,
+            shutdown_event,
         )
 
     await asyncio.gather(subscriber_task, return_exceptions=True)
