@@ -20,7 +20,7 @@ RESOLUTION_BITS = 23
 MICROVOLT_CONVERSION = FSR / (2**RESOLUTION_BITS) * 1000 * 1000
 LC_VOLTS = 2
 KG_CONVERSION = 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000 / 1000
-SAMPLE_RATE = 2000
+SAMPLE_RATE = 1000
 
 
 def plotter(shutdown_event):
@@ -35,7 +35,7 @@ def plotter(shutdown_event):
     ax4 = ax1.twinx()
     ax_hist = fig.add_subplot(gs[1], sharey=ax1)  # Histogram
 
-    x_data, y_data = [], []
+    x_data, y_data_3, y_data_2 = [], [], []
     data_counter = 0  # Track the total number of data points for the X-axis
 
     while not shutdown_event.is_set():
@@ -46,17 +46,24 @@ def plotter(shutdown_event):
             x_data += list(
                 range(data_counter, data_counter + len(message))
             )  # Adjust X-axis
-            y_data += message
+
+            ch3_data = [sample["channels"][2] for sample in message]
+            ch2_data = [sample["channels"][1] for sample in message]
+            y_data_3 += ch3_data
+            y_data_2 += ch2_data
 
             # Limit the data for both axes
-            x_data = x_data[(-2000 * 4) :]
-            y_data = y_data[(-2000 * 4) :]
+            x_data = x_data[(-SAMPLE_RATE * 8) :]
+            y_data_2 = y_data_2[(-SAMPLE_RATE * 8) :]
+            y_data_3 = y_data_3[(-SAMPLE_RATE * 8) :]
 
             data_counter += len(message)  # Update counter for next X-axis range
 
             # Clear and update the main plot
             ax1.clear()
-            ax1.plot(x_data, y_data)
+            ax1.plot(x_data, y_data_3, label="ch3")
+            ax1.plot(x_data, y_data_2, label="ch2")
+            ax1.legend()
             ax1.set_xlabel("X")
             ax1.set_ylabel("ADC Values")
             ax1.set_title("Real-time Data Plot")
@@ -97,7 +104,7 @@ def plotter(shutdown_event):
             # Clear and update the histogram
             ax_hist.clear()
             ax_hist.hist(
-                y_data,
+                y_data_3,
                 bins=100,
                 orientation="horizontal",
                 alpha=0.7,
@@ -108,16 +115,18 @@ def plotter(shutdown_event):
             ax_hist.set_title("Distribution")
 
             # Calculate mean and standard deviation
-            mean = np.mean(y_data)
-            std = np.std(y_data)
+            mean = np.mean(y_data_3)
+            std = np.std(y_data_3)
             uV_mean = mean * MICROVOLT_CONVERSION
             uV_std = std * MICROVOLT_CONVERSION
             kg_mean = uV_mean * KG_CONVERSION
             kg_std = uV_std * KG_CONVERSION
 
+            eps = 1e-8
+
             # Generate data for Gaussian curve
-            y_range = np.linspace(min(y_data), max(y_data), 100)
-            gaussian = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(
+            y_range = np.linspace(min(y_data_3), max(y_data_3), 100)
+            gaussian = (1 / ((std + eps) * np.sqrt(2 * np.pi))) * np.exp(
                 -0.5 * ((y_range - mean) / std) ** 2
             )
             gaussian_scaled = gaussian
