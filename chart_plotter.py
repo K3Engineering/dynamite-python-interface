@@ -71,13 +71,14 @@ def plotter(shutdown_event):
     plt.ion()
 
     # Use gridspec for arranging main plot and histogram
-    fig = plt.figure(figsize=(8, 6))
-    gs = gridspec.GridSpec(1, 2, width_ratios=[4, 1])  # Main plot larger than histogram
+    fig = plt.figure(figsize=(15, 10))
+    gs = gridspec.GridSpec(2, 2, height_ratios=[3, 1], width_ratios=[4, 1])
     ax1 = fig.add_subplot(gs[0])  # Main plot
     ax2 = ax1.twiny()
     ax3 = ax1.twinx()
     ax4 = ax1.twinx()
     ax_hist = fig.add_subplot(gs[1], sharey=ax1)  # Histogram
+    ax_filtered = fig.add_subplot(gs[1, :])
 
     x_data, y_data_3, y_data_2 = [], [], []
     data_counter = 0  # Track the total number of data points for the X-axis
@@ -238,7 +239,27 @@ def plotter(shutdown_event):
 
             plt.tight_layout()
             plt.draw()
-            # plt.pause(0.1)
+
+        if tared:  # Check if the signal is tared
+            ch2_tared = [item - tare_offset[0] for item in ch2_filtered_section]
+            ch3_tared = [item - tare_offset[1] for item in ch3_filtered_section]
+
+            ax_filtered.clear()
+            ax_filtered.plot(
+                x_filtered,
+                ch3_tared,
+                label="ch3 (filtered)",
+            )
+            ax_filtered.plot(
+                x_filtered,
+                ch2_tared,
+                label="ch2 (filtered)",
+            )
+
+            ax_filtered.legend()
+            ax_filtered.set_title("Filtered Signals (Tared)")
+            ax_filtered.set_xlabel("Time (seconds)")
+            ax_filtered.set_ylabel("Filtered ADC Values")
 
         plt.pause(0.1)  # Small pause to prevent busy waiting.
 
