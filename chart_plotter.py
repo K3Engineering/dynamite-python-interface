@@ -74,11 +74,15 @@ def plotter(shutdown_event):
     fig = plt.figure(figsize=(15, 10))
     gs = gridspec.GridSpec(3, 2, height_ratios=[3, 1, 1], width_ratios=[4, 1])
     ax1 = fig.add_subplot(gs[0])  # Main plot
-    ax2 = ax1.twiny()
-    ax3 = ax1.twinx()
-    ax4 = ax1.twinx()
+    ax_seconds = ax1.twiny()
+    ax_uV = ax1.twinx()
+    ax_kg = ax1.twinx()
     ax_hist = fig.add_subplot(gs[1], sharey=ax1)  # Histogram
+
     ax_filtered = fig.add_subplot(gs[1, :])
+    ax_filtered_seconds = ax_filtered.twiny()
+    ax_filtered_uV = ax_filtered.twinx()  # µV Y-axis
+    ax_filtered_kg = ax_filtered.twinx()  # kg Y-axis
     ax_angle = fig.add_subplot(gs[2, :])
 
     x_data, y_data_3, y_data_2 = [], [], []
@@ -135,37 +139,39 @@ def plotter(shutdown_event):
             ax1.set_title("Real-time Data Plot")
 
             # Secondary X-axis (Time in Seconds)
-            ax2.clear()
-            ax2.set_xlim(ax1.get_xlim())  # Synchronize with the sample number axis
-            ax2.set_xlabel("Time (seconds)")
-            ax2.xaxis.set_label_position("top")
+            ax_seconds.clear()
+            ax_seconds.set_xlim(
+                ax1.get_xlim()
+            )  # Synchronize with the sample number axis
+            ax_seconds.set_xlabel("Time (seconds)")
+            ax_seconds.xaxis.set_label_position("top")
             time_ticks = np.array(x_data[::500])  # Adjust tick density
-            ax2.set_xticks(time_ticks)
-            ax2.set_xticklabels(
-                (time_ticks / SAMPLE_RATE).round(2)
+            ax_seconds.set_xticks(time_ticks)
+            ax_seconds.set_xticklabels(
+                (time_ticks / SAMPLE_RATE).round(1)
             )  # Convert to seconds with 2 decimal places
 
             # Secondary Y-axis 1 (Microvolts)
-            ax3.clear()
-            ax3.spines["right"].set_position(
+            ax_uV.clear()
+            ax_uV.spines["right"].set_position(
                 ("outward", 60)
             )  # Offset the secondary Y-axis
-            ax3.set_ylabel("Microvolts (µV)")
-            ax3.yaxis.set_label_position("right")
-            ax3.set_ylim(ax1.get_ylim())  # Ensure synchronization
-            ax3.set_yticks(ax1.get_yticks())
-            ax3.set_yticklabels((ax1.get_yticks() * MICROVOLT_CONVERSION).round(2))
+            ax_uV.set_ylabel("Microvolts (µV)")
+            ax_uV.yaxis.set_label_position("right")
+            ax_uV.set_ylim(ax1.get_ylim())  # Ensure synchronization
+            ax_uV.set_yticks(ax1.get_yticks())
+            ax_uV.set_yticklabels((ax1.get_yticks() * MICROVOLT_CONVERSION).round(2))
 
             # Secondary Y-axis 2 (Kilograms)
-            ax4.clear()
-            ax4.spines["right"].set_position(
+            ax_kg.clear()
+            ax_kg.spines["right"].set_position(
                 ("outward", 120)
             )  # Offset the tertiary Y-axis
-            ax4.set_ylabel("Kilograms (kg)")
-            ax4.yaxis.set_label_position("right")
-            ax4.set_ylim(ax1.get_ylim())  # Ensure synchronization
-            ax4.set_yticks(ax1.get_yticks())
-            ax4.set_yticklabels((ax3.get_yticks() * KG_CONVERSION).round(2))
+            ax_kg.set_ylabel("Kilograms (kg)")
+            ax_kg.yaxis.set_label_position("right")
+            ax_kg.set_ylim(ax1.get_ylim())  # Ensure synchronization
+            ax_kg.set_yticks(ax1.get_yticks())
+            ax_kg.set_yticklabels((ax_uV.get_yticks() * KG_CONVERSION).round(2))
 
             # Clear and update the histogram
             ax_hist.clear()
@@ -260,6 +266,40 @@ def plotter(shutdown_event):
             ax_filtered.set_title("Filtered Signals (Tared)")
             ax_filtered.set_xlabel("Time (samples)")
             ax_filtered.set_ylabel("Filtered ADC Values")
+
+            ax_filtered_seconds.clear()
+            ax_filtered_seconds.set_xlim(
+                ax_filtered.get_xlim()
+            )  # Synchronize with the sample number axis
+            ax_filtered_seconds.set_xlabel("Time (seconds)")
+            ax_filtered_seconds.xaxis.set_label_position("top")
+            time_ticks = np.array(x_filtered[::500])  # Adjust tick density
+            ax_filtered_seconds.set_xticks(time_ticks)
+            ax_filtered_seconds.set_xticklabels(
+                (time_ticks / SAMPLE_RATE).round(1)
+            )  # Convert to seconds with 2 decimal places
+
+            # Secondary Y-axis for µV
+            ax_filtered_uV.clear()
+            ax_filtered_uV.spines["right"].set_position(("outward", 60))
+            ax_filtered_uV.set_ylabel("Microvolts (µV)")
+            ax_filtered_uV.yaxis.set_label_position("right")
+            ax_filtered_uV.set_ylim(ax_filtered.get_ylim())  # Synchronize Y limits
+            ax_filtered_uV.set_yticks(ax_filtered.get_yticks())
+            ax_filtered_uV.set_yticklabels(
+                (ax_filtered.get_yticks() * MICROVOLT_CONVERSION).round(2)
+            )
+
+            # Secondary Y-axis for kg
+            ax_filtered_kg.clear()
+            ax_filtered_kg.spines["right"].set_position(("outward", 120))
+            ax_filtered_kg.set_ylabel("Kilograms (kg)")
+            ax_filtered_kg.yaxis.set_label_position("right")
+            ax_filtered_kg.set_ylim(ax_filtered.get_ylim())  # Synchronize Y limits
+            ax_filtered_kg.set_yticks(ax_filtered.get_yticks())
+            ax_filtered_kg.set_yticklabels(
+                (ax_filtered_uV.get_yticks() * KG_CONVERSION).round(2)
+            )
 
             angles = np.degrees(np.arctan2(ch3_tared, ch2_tared))  # Angle calculation
             ax_angle.clear()
