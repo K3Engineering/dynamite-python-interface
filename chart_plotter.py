@@ -56,7 +56,7 @@ class IncrementalConvolution:
         if to_compute_length > 0:
             # mode='valid' outputs (signal - kernel + 1) size. We give it (signal - kernel + 1)
             new_valid_part = np.convolve(
-                self.y_data[-to_compute_length - len(self.kernel) :],
+                self.y_data[-to_compute_length - len(self.kernel) + 1 :],
                 self.kernel,
                 mode="valid",
             )
