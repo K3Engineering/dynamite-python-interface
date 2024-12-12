@@ -88,7 +88,7 @@ def plotter(shutdown_event):
     ch2_filtered = IncrementalConvolution(kernel)
 
     tared = False  # Initial state of taring
-    tare_offset = [0, 0]
+    tare_offset = [0, 0]  # in raw ADC value
 
     while not shutdown_event.is_set():
         if not plotting_queue.empty():
@@ -258,7 +258,7 @@ def plotter(shutdown_event):
 
             ax_filtered.legend()
             ax_filtered.set_title("Filtered Signals (Tared)")
-            ax_filtered.set_xlabel("Time (seconds)")
+            ax_filtered.set_xlabel("Time (samples)")
             ax_filtered.set_ylabel("Filtered ADC Values")
 
         plt.pause(0.1)  # Small pause to prevent busy waiting.
