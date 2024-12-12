@@ -13,24 +13,25 @@ def read_file(filepath: str):
 async def send_dict_to_queue(shutdown_event, iter, queue):
     buffer = []
     batch_size = 100
-    while not shutdown_event.is_set():
-        for item in iter:
-            buffer.append(item)
 
-            if len(buffer) >= batch_size:
-                await queue.put(buffer)
-                print(f"Sent {len(buffer)} packets")
-                await asyncio.sleep(
-                    batch_size / 1000
-                )  # note that this doesn't guarantee exactly 1khz runtime, as we do other stuff in the task as well
+    for item in iter:
+        buffer.append(item)
 
-                buffer = []
-
-        if len(buffer) > 0:
+        if len(buffer) >= batch_size:
             await queue.put(buffer)
             print(f"Sent {len(buffer)} packets")
+            await asyncio.sleep(
+                batch_size / 1000
+            )  # note that this doesn't guarantee exactly 1khz runtime, as we do other stuff in the task as well
 
-        break
+            buffer = []
+
+        if shutdown_event.is_set():
+            break
+
+    if len(buffer) > 0 and not shutdown_event.is_set():
+        await queue.put(buffer)
+        print(f"Sent {len(buffer)} packets")
 
     print("Shutting down replay")
 
