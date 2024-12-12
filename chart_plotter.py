@@ -72,13 +72,14 @@ def plotter(shutdown_event):
 
     # Use gridspec for arranging main plot and histogram
     fig = plt.figure(figsize=(15, 10))
-    gs = gridspec.GridSpec(2, 2, height_ratios=[3, 1], width_ratios=[4, 1])
+    gs = gridspec.GridSpec(3, 2, height_ratios=[3, 1, 1], width_ratios=[4, 1])
     ax1 = fig.add_subplot(gs[0])  # Main plot
     ax2 = ax1.twiny()
     ax3 = ax1.twinx()
     ax4 = ax1.twinx()
     ax_hist = fig.add_subplot(gs[1], sharey=ax1)  # Histogram
     ax_filtered = fig.add_subplot(gs[1, :])
+    ax_angle = fig.add_subplot(gs[2, :])
 
     x_data, y_data_3, y_data_2 = [], [], []
     data_counter = 0  # Track the total number of data points for the X-axis
@@ -260,6 +261,18 @@ def plotter(shutdown_event):
             ax_filtered.set_title("Filtered Signals (Tared)")
             ax_filtered.set_xlabel("Time (samples)")
             ax_filtered.set_ylabel("Filtered ADC Values")
+
+            angles = np.degrees(np.arctan2(ch3_tared, ch2_tared))  # Angle calculation
+            ax_angle.clear()
+            ax_angle.plot(
+                x_filtered,
+                angles,
+                label="Angle between signals (degrees)",
+            )
+            ax_angle.legend()
+            ax_angle.set_title("Angle Between Signals")
+            ax_angle.set_xlabel("Time (samples)")
+            ax_angle.set_ylabel("Angle (degrees)")
 
         plt.pause(0.1)  # Small pause to prevent busy waiting.
 
