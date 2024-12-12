@@ -111,7 +111,9 @@ def plotter(shutdown_event):
 
             ch3_filtered_section = ch3_filtered_data[x_data[0] :]
             ch2_filtered_section = ch2_filtered_data[x_data[0] :]
-            x_filtered = x_data[: len(ch3_filtered_section)]
+            x_filtered = (
+                np.array(x_data[: len(ch3_filtered_section)]) + len(kernel) // 2
+            )  # fix offset
 
             data_counter += len(message)  # Update counter for next X-axis range
 
