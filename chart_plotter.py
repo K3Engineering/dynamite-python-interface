@@ -210,7 +210,6 @@ def plotter(shutdown_event):
                 if not tared:
                     tare_offset = [mean_ch2, mean_ch3]
                     tared = True
-                    print("Tared")
 
             eps = 1e-8
 
