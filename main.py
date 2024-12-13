@@ -18,8 +18,8 @@ parsed_bt_queue = asyncio.Queue()
 shutdown_event = threading.Event()
 
 
-async def main(data_connector_ch3, data_connector_ch2):
-    replay = True
+async def main(plot_classes):
+    replay = False
 
     subscribers = [update_data]
 
@@ -31,9 +31,7 @@ async def main(data_connector_ch3, data_connector_ch2):
     )
 
     # plotter(shutdown_event)
-    asyncio.create_task(
-        plotter2(data_connector_ch3, data_connector_ch2, shutdown_event)
-    )
+    asyncio.create_task(plotter2(plot_classes, shutdown_event))
 
     if not replay:
         await bt_setup(parsed_bt_queue, shutdown_event)
@@ -47,10 +45,8 @@ async def main(data_connector_ch3, data_connector_ch2):
     await asyncio.gather(subscriber_task, return_exceptions=True)
 
 
-def run_event_loop(
-    data_connector_ch3: DataConnector, data_connector_ch2: DataConnector
-):
-    asyncio.run(main(data_connector_ch3, data_connector_ch2))
+def run_event_loop(plot_classes):
+    asyncio.run(main(plot_classes))
 
 
 def signal_handler(signum, frame):
@@ -64,14 +60,11 @@ if __name__ == "__main__":
 
     app = QApplication([])
 
-    data_connector_ch3, data_connector_ch2 = initialize_plot()
+    plot_classes = initialize_plot()
 
     t = threading.Thread(
         target=run_event_loop,
-        args=(
-            data_connector_ch3,
-            data_connector_ch2,
-        ),
+        args=(plot_classes,),
     )
     t.start()
 

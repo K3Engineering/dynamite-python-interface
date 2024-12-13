@@ -76,7 +76,7 @@ class IncrementalConvolution:
         return self.big_convolution
 
 
-def initialize_plot() -> tuple[DataConnector, DataConnector]:
+def initialize_plot():
     """Initializes the pglive plot widget and connectors."""
 
     pg.setConfigOptions(antialias=True)
@@ -113,12 +113,20 @@ def initialize_plot() -> tuple[DataConnector, DataConnector]:
     data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=6000, update_rate=100)
 
     plot_widget.show()
-    return data_connector_ch3, data_connector_ch2
+
+    plot_classes = {
+        "dc_ch3": data_connector_ch3,
+        "dc_ch2": data_connector_ch2,
+        "pw": plot_widget,
+        "p1": p1,
+        "p2": p2,
+        "p3": p3,
+    }
+
+    return plot_classes
 
 
-async def plotter2(
-    data_connector_ch3: DataConnector, data_connector_ch2: DataConnector, shutdown_event
-):
+async def plotter2(plot_classes, shutdown_event):
     """Handles real-time plotting using pglive."""
     x_data = []
     data_counter = 0
@@ -127,16 +135,14 @@ async def plotter2(
             message = plotting_queue.get_nowait()
 
             x_data = list(range(data_counter, data_counter + len(message)))
-            data_counter += len(message)
+            # data_counter += len(message) // 2
 
             # Extract channel data
             ch3_data = [sample["channels"][2] for sample in message]
             ch2_data = [sample["channels"][1] for sample in message]
 
-            print(ch3_data, x_data)
-
-            data_connector_ch3.cb_append_data_array(ch3_data, x_data)
-            data_connector_ch2.cb_append_data_array(ch2_data, x_data)
+            plot_classes["dc_ch3"].cb_append_data_array(ch3_data, x_data)
+            plot_classes["dc_ch2"].cb_append_data_array(ch2_data, x_data)
 
         await asyncio.sleep(0.01)
 
@@ -410,7 +416,8 @@ def update_data(data: list):
     buffer.extend(data)
 
     if datetime.now() >= next_push_time:
+        # print("buffer", len(buffer))
         plotting_queue.put(buffer)
 
         buffer = []  # Clear the buffer
-        next_push_time = datetime.now() + timedelta(milliseconds=600)
+        next_push_time = datetime.now() + timedelta(milliseconds=1)
