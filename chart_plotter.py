@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QApplication
 import pyqtgraph as pg
 from pglive.sources.data_connector import DataConnector
 from pglive.sources.live_plot_widget import LivePlotWidget
-from pglive.sources.live_plot import LiveLinePlot, LiveScatterPlot
+from pglive.sources.live_plot import LiveLinePlot
 
 from time import sleep
 
@@ -85,8 +85,8 @@ def initialize_plot():
     p1 = plot_widget.plotItem
     p1.setLabels(left="Raw ADC values")
 
-    plot_curve_ch3 = LiveScatterPlot(pen="r", name="ch3")
-    plot_curve_ch2 = LiveScatterPlot(pen="orange", name="ch2")
+    plot_curve_ch3 = LiveLinePlot(pen="r", name="ch3")
+    plot_curve_ch2 = LiveLinePlot(pen="orange", name="ch2")
 
     p2 = pg.ViewBox()
     p1.showAxis("right")
