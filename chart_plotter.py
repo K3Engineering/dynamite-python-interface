@@ -77,26 +77,29 @@ class IncrementalConvolution:
 
 
 def initialize_plot():
-    """Initializes the pglive plot widget and connectors."""
-
+    """Initializes the pglive plot widget and connectors with advanced features."""
     pg.setConfigOptions(antialias=True)
 
     plot_widget = LivePlotWidget(title="Real-time Data Plot")
     p1 = plot_widget.plotItem
     p1.setLabels(left="Raw ADC values")
 
+    # Main raw ADC plots
     plot_curve_ch3 = LiveLinePlot(pen="r", name="ch3")
     plot_curve_ch2 = LiveLinePlot(pen="orange", name="ch2")
 
+    # Filtered signal plots
+    plot_curve_ch3_filtered = LiveLinePlot(pen="g", name="ch3 (filtered)")
+    plot_curve_ch2_filtered = LiveLinePlot(pen="b", name="ch2 (filtered)")
+
+    # Secondary axes for µV and kg
     p2 = pg.ViewBox()
     p1.showAxis("right")
     p1.scene().addItem(p2)
     p1.getAxis("right").linkToView(p2)
     p2.setXLink(p1)
-    p1.getAxis("right").setLabel("Values in KG")
+    p1.getAxis("right").setLabel("Microvolts (µV)")
 
-    ## create third ViewBox.
-    ## this time we need to create a new axis as well.
     p3 = pg.ViewBox()
     ax3 = pg.AxisItem("right")
     p1.layout.addItem(ax3, 2, 3)
@@ -104,19 +107,31 @@ def initialize_plot():
     ax3.linkToView(p3)
     p3.setXLink(p1)
     ax3.setZValue(-10000)
-    ax3.setLabel("axis 3", color="#ff0000")
+    ax3.setLabel("Kilograms (kg)")
 
+    # Add items to the widget
     plot_widget.addItem(plot_curve_ch3)
     plot_widget.addItem(plot_curve_ch2)
+    plot_widget.addItem(plot_curve_ch3_filtered)
+    plot_widget.addItem(plot_curve_ch2_filtered)
 
+    # Data connectors
     data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=4000)
     data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=4000)
+    data_connector_ch3_filtered = DataConnector(
+        plot_curve_ch3_filtered, max_points=4000
+    )
+    data_connector_ch2_filtered = DataConnector(
+        plot_curve_ch2_filtered, max_points=4000
+    )
 
     plot_widget.show()
 
     plot_classes = {
         "dc_ch3": data_connector_ch3,
         "dc_ch2": data_connector_ch2,
+        "dc_ch3_filtered": data_connector_ch3_filtered,
+        "dc_ch2_filtered": data_connector_ch2_filtered,
         "pw": plot_widget,
         "p1": p1,
         "p2": p2,
@@ -129,7 +144,16 @@ def initialize_plot():
 async def plotter2(plot_classes, shutdown_event):
     """Handles real-time plotting using pglive."""
     x_data = []
+    y_data_3, y_data_2 = [], []
     data_counter = 0
+    kernel = gen_lowpass_filter_kernel()
+
+    ch3_filtered = IncrementalConvolution(kernel)
+    ch2_filtered = IncrementalConvolution(kernel)
+
+    tared = False
+    tare_offset = [0, 0]
+
     while not shutdown_event.is_set():  # TODO asyncio queue
         if not plotting_queue.empty():
             message = plotting_queue.get_nowait()
@@ -140,6 +164,24 @@ async def plotter2(plot_classes, shutdown_event):
             # Extract channel data
             ch3_data = [sample["channels"][2] for sample in message]
             ch2_data = [sample["channels"][1] for sample in message]
+
+            # Apply filtering
+            ch3_filtered_data = ch3_filtered.process(ch3_data)
+            ch2_filtered_data = ch2_filtered.process(ch2_data)
+
+            # Calculate taring if conditions are met
+            if (
+                np.std(ch2_data) < TARING_THRESHOLD
+                and np.std(ch3_data) < TARING_THRESHOLD
+                and len(x_data) > SAMPLE_RATE * 2
+                and not tared
+            ):
+                tare_offset = [np.mean(ch2_data), np.mean(ch3_data)]
+                tared = True
+
+            if tared:
+                ch2_filtered_tared = np.array(ch2_filtered_data) - tare_offset[0]
+                ch3_filtered_tared = np.array(ch3_filtered_data) - tare_offset[1]
 
             plot_classes["dc_ch3"].cb_append_data_array(ch3_data, x_data)
             plot_classes["dc_ch2"].cb_append_data_array(ch2_data, x_data)
