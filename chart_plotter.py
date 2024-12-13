@@ -6,6 +6,14 @@ import numpy as np
 from queue import Queue
 from datetime import datetime, timedelta
 
+from PyQt6.QtWidgets import QApplication
+import pyqtgraph as pg
+from pglive.sources.data_connector import DataConnector
+from pglive.sources.live_plot_widget import LivePlotWidget
+from pglive.sources.live_plot import LiveLinePlot
+
+from time import sleep
+
 plotting_queue = Queue()
 
 buffer = []
@@ -65,6 +73,45 @@ class IncrementalConvolution:
 
         # TODO: remove old data from y_data to keep only necessary part for next convolutions?
         return self.big_convolution
+
+
+def initialize_plot():
+    """Initializes the pglive plot widget and connectors."""
+
+    pg.setConfigOptions(antialias=True)
+
+    plot_widget = LivePlotWidget(title="Real-time Data Plot")
+    plot_curve_ch3 = LiveLinePlot(pen="r", name="ch3")
+    plot_curve_ch2 = LiveLinePlot(pen="b", name="ch2")
+
+    plot_widget.addItem(plot_curve_ch3)
+    plot_widget.addItem(plot_curve_ch2)
+
+    data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=600, update_rate=100)
+    data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=600, update_rate=100)
+
+    plot_widget.show()
+    return data_connector_ch3, data_connector_ch2
+
+
+def plotter2(data_connector_ch3, data_connector_ch2, shutdown_event):
+    """Handles real-time plotting using pglive."""
+    x_data = 0
+    while not shutdown_event.is_set():
+        if not plotting_queue.empty():
+            message = plotting_queue.get_nowait()
+
+            # Extract channel data
+            ch3_data = [sample["channels"][2] for sample in message]
+            ch2_data = [sample["channels"][1] for sample in message]
+
+            # Update connectors with new data points
+            for ch3, ch2 in zip(ch3_data, ch2_data):
+                x_data += 1
+                data_connector_ch3.cb_append_data_point(ch3, x_data)
+                data_connector_ch2.cb_append_data_point(ch2, x_data)
+
+        sleep(0.01)
 
 
 def plotter(shutdown_event):
