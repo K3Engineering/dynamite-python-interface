@@ -76,7 +76,7 @@ class IncrementalConvolution:
         return self.big_convolution
 
 
-def initialize_plot():
+def initialize_plot() -> tuple[DataConnector, DataConnector]:
     """Initializes the pglive plot widget and connectors."""
 
     pg.setConfigOptions(antialias=True)
@@ -88,29 +88,32 @@ def initialize_plot():
     plot_widget.addItem(plot_curve_ch3)
     plot_widget.addItem(plot_curve_ch2)
 
-    data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=600, update_rate=100)
-    data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=600, update_rate=100)
+    data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=6000, update_rate=100)
+    data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=6000, update_rate=100)
 
     plot_widget.show()
     return data_connector_ch3, data_connector_ch2
 
 
-async def plotter2(data_connector_ch3, data_connector_ch2, shutdown_event):
+async def plotter2(
+    data_connector_ch3: DataConnector, data_connector_ch2: DataConnector, shutdown_event
+):
     """Handles real-time plotting using pglive."""
-    x_data = 0
+    x_data = []
+    data_counter = 0
     while not shutdown_event.is_set():  # TODO asyncio queue
         if not plotting_queue.empty():
             message = plotting_queue.get_nowait()
+
+            x_data = list(range(data_counter, data_counter + len(message)))
+            data_counter += len(message)
 
             # Extract channel data
             ch3_data = [sample["channels"][2] for sample in message]
             ch2_data = [sample["channels"][1] for sample in message]
 
-            # Update connectors with new data points
-            for ch3, ch2 in zip(ch3_data, ch2_data):
-                x_data += 1
-                data_connector_ch3.cb_append_data_point(ch3, x_data)
-                data_connector_ch2.cb_append_data_point(ch2, x_data)
+            data_connector_ch3.cb_append_data_array(ch3_data, x_data)
+            data_connector_ch2.cb_append_data_array(ch2_data, x_data)
 
         await asyncio.sleep(0.01)
 
@@ -387,4 +390,4 @@ def update_data(data: list):
         plotting_queue.put(buffer)
 
         buffer = []  # Clear the buffer
-        next_push_time = datetime.now() + timedelta(milliseconds=300)
+        next_push_time = datetime.now() + timedelta(milliseconds=6)

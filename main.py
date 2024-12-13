@@ -47,7 +47,9 @@ async def main(data_connector_ch3, data_connector_ch2):
     await asyncio.gather(subscriber_task, return_exceptions=True)
 
 
-def run_event_loop(data_connector_ch3, data_connector_ch2):
+def run_event_loop(
+    data_connector_ch3: DataConnector, data_connector_ch2: DataConnector
+):
     asyncio.run(main(data_connector_ch3, data_connector_ch2))
 
 
