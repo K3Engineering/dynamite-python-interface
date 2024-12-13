@@ -127,8 +127,8 @@ def simple_handle_rx(characterictic, data):
     parsed_bt_queue.put_nowait(decoded)
 
 
-async def print_count_stats_per_second(event):
-    while True:
+async def print_count_stats_per_second(event, shutdown_event):
+    while not shutdown_event.is_set():
         count = len(len_queue)
 
         min_count = math.inf
@@ -157,8 +157,8 @@ async def print_count_stats_per_second(event):
         event.clear()
 
 
-async def timer_task_f(event):
-    while True:
+async def timer_task_f(event, shutdown_event):
+    while not shutdown_event.is_set():
         await asyncio.sleep(1)
         event.set()
 
@@ -174,8 +174,8 @@ async def wait_for_shutdown(shutdown_event, client):
 
 async def bt_setup(queue, shutdown_event, mock=False):
     timer_event = asyncio.Event()
-    asyncio.create_task(timer_task_f(timer_event))
-    asyncio.create_task(print_count_stats_per_second(timer_event))
+    asyncio.create_task(timer_task_f(timer_event, shutdown_event))
+    asyncio.create_task(print_count_stats_per_second(timer_event, shutdown_event))
 
     global parsed_bt_queue
 
