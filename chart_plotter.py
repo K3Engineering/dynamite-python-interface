@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import QApplication
 import pyqtgraph as pg
 from pglive.sources.data_connector import DataConnector
 from pglive.sources.live_plot_widget import LivePlotWidget
-from pglive.sources.live_plot import LiveLinePlot
+from pglive.sources.live_plot import LiveLinePlot, LiveScatterPlot
 
 from time import sleep
 
@@ -82,8 +82,29 @@ def initialize_plot() -> tuple[DataConnector, DataConnector]:
     pg.setConfigOptions(antialias=True)
 
     plot_widget = LivePlotWidget(title="Real-time Data Plot")
-    plot_curve_ch3 = LiveLinePlot(pen="r", name="ch3")
-    plot_curve_ch2 = LiveLinePlot(pen="b", name="ch2")
+    p1 = plot_widget.plotItem
+    p1.setLabels(left="Raw ADC values")
+
+    plot_curve_ch3 = LiveScatterPlot(pen="r", name="ch3")
+    plot_curve_ch2 = LiveScatterPlot(pen="orange", name="ch2")
+
+    p2 = pg.ViewBox()
+    p1.showAxis("right")
+    p1.scene().addItem(p2)
+    p1.getAxis("right").linkToView(p2)
+    p2.setXLink(p1)
+    p1.getAxis("right").setLabel("Values in KG")
+
+    ## create third ViewBox.
+    ## this time we need to create a new axis as well.
+    p3 = pg.ViewBox()
+    ax3 = pg.AxisItem("right")
+    p1.layout.addItem(ax3, 2, 3)
+    p1.scene().addItem(p3)
+    ax3.linkToView(p3)
+    p3.setXLink(p1)
+    ax3.setZValue(-10000)
+    ax3.setLabel("axis 3", color="#ff0000")
 
     plot_widget.addItem(plot_curve_ch3)
     plot_widget.addItem(plot_curve_ch2)
@@ -111,6 +132,8 @@ async def plotter2(
             # Extract channel data
             ch3_data = [sample["channels"][2] for sample in message]
             ch2_data = [sample["channels"][1] for sample in message]
+
+            print(ch3_data, x_data)
 
             data_connector_ch3.cb_append_data_array(ch3_data, x_data)
             data_connector_ch2.cb_append_data_array(ch2_data, x_data)
@@ -390,4 +413,4 @@ def update_data(data: list):
         plotting_queue.put(buffer)
 
         buffer = []  # Clear the buffer
-        next_push_time = datetime.now() + timedelta(milliseconds=6)
+        next_push_time = datetime.now() + timedelta(milliseconds=600)
