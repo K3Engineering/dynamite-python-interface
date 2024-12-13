@@ -109,8 +109,8 @@ def initialize_plot():
     plot_widget.addItem(plot_curve_ch3)
     plot_widget.addItem(plot_curve_ch2)
 
-    data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=6000, update_rate=100)
-    data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=6000, update_rate=100)
+    data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=4000)
+    data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=4000)
 
     plot_widget.show()
 
@@ -135,7 +135,7 @@ async def plotter2(plot_classes, shutdown_event):
             message = plotting_queue.get_nowait()
 
             x_data = list(range(data_counter, data_counter + len(message)))
-            # data_counter += len(message) // 2
+            data_counter += len(message)
 
             # Extract channel data
             ch3_data = [sample["channels"][2] for sample in message]
@@ -420,4 +420,4 @@ def update_data(data: list):
         plotting_queue.put(buffer)
 
         buffer = []  # Clear the buffer
-        next_push_time = datetime.now() + timedelta(milliseconds=1)
+        next_push_time = datetime.now() + timedelta(milliseconds=6)
