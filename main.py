@@ -4,7 +4,7 @@ import signal
 from time import sleep
 from replay import replay_setup
 from subscribe import subscribe_to_messages
-from chart_plotter import initialize_plot, plotter, update_data
+from chart_plotter import initialize_plot, plotter, plotter2, update_data
 from writer import write_to_file
 from bt import bt_setup
 
@@ -31,6 +31,9 @@ async def main(data_connector_ch3, data_connector_ch2):
     )
 
     # plotter(shutdown_event)
+    asyncio.create_task(
+        plotter2(data_connector_ch3, data_connector_ch2, shutdown_event)
+    )
 
     if not replay:
         await bt_setup(parsed_bt_queue, shutdown_event)

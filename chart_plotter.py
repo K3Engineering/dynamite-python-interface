@@ -1,3 +1,4 @@
+import asyncio
 from matplotlib import pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
@@ -94,10 +95,10 @@ def initialize_plot():
     return data_connector_ch3, data_connector_ch2
 
 
-def plotter2(data_connector_ch3, data_connector_ch2, shutdown_event):
+async def plotter2(data_connector_ch3, data_connector_ch2, shutdown_event):
     """Handles real-time plotting using pglive."""
     x_data = 0
-    while not shutdown_event.is_set():
+    while not shutdown_event.is_set():  # TODO asyncio queue
         if not plotting_queue.empty():
             message = plotting_queue.get_nowait()
 
@@ -111,7 +112,7 @@ def plotter2(data_connector_ch3, data_connector_ch2, shutdown_event):
                 data_connector_ch3.cb_append_data_point(ch3, x_data)
                 data_connector_ch2.cb_append_data_point(ch2, x_data)
 
-        sleep(0.01)
+        await asyncio.sleep(0.01)
 
 
 def plotter(shutdown_event):
