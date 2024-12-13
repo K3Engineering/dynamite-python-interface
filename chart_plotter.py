@@ -246,9 +246,9 @@ def plotter(shutdown_event):
             plt.tight_layout()
             plt.draw()
 
-        if tared:  # Check if the signal is tared
-            ch2_tared = [item - tare_offset[0] for item in ch2_filtered_section]
-            ch3_tared = [item - tare_offset[1] for item in ch3_filtered_section]
+        if tared:
+            ch2_tared = np.array(ch2_filtered_section) - tare_offset[0]
+            ch3_tared = np.array(ch3_filtered_section) - tare_offset[1]
 
             ax_filtered.clear()
             ax_filtered.plot(
@@ -301,17 +301,25 @@ def plotter(shutdown_event):
                 (ax_filtered_uV.get_yticks() * KG_CONVERSION).round(2)
             )
 
-            angles = np.degrees(np.arctan2(ch3_tared, ch2_tared))  # Angle calculation
-            ax_angle.clear()
-            ax_angle.plot(
-                x_filtered,
-                angles,
-                label="Angle between signals (degrees)",
-            )
-            ax_angle.legend()
-            ax_angle.set_title("Angle Between Signals")
-            ax_angle.set_xlabel("Time (samples)")
-            ax_angle.set_ylabel("Angle (degrees)")
+            # ratios = np.zeros_like(ch3_tared)
+
+            # mask = (np.abs(ch2_tared) > std_ch3 * 2) & (np.abs(ch3_tared) > std_ch3 * 2)
+
+            # print(mask)
+            # ratios[mask] = (ch3_tared[mask] - ch2_tared[mask]) / (
+            #     ch3_tared[mask] + ch2_tared[mask]
+            # )
+            # # ratios = (ch3_tared - ch2_tared) / (ch3_tared + ch2_tared)  # TODO epsilon
+            # ax_angle.clear()
+            # ax_angle.plot(
+            #     x_filtered,
+            #     mask,
+            #     label="Ratio between signals (unitless)",
+            # )
+            # ax_angle.legend()
+            # ax_angle.set_title("Ratio Between Signals")
+            # ax_angle.set_xlabel("Time (samples)")
+            # ax_angle.set_ylabel("Ratio (unitless)")
 
         plt.pause(0.1)  # Small pause to prevent busy waiting.
 
