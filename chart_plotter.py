@@ -80,6 +80,9 @@ def initialize_plot():
     """Initializes the pglive plot widget and connectors with advanced features."""
     pg.setConfigOptions(antialias=True)
 
+    layout = pg.LayoutWidget()
+    layout.layout.setSpacing(0)
+
     plot_widget = LivePlotWidget(title="Real-time Data Plot")
     p1 = plot_widget.plotItem
     p1.setLabels(left="Raw ADC values")
@@ -115,6 +118,8 @@ def initialize_plot():
     plot_widget.addItem(plot_curve_ch3_filtered)
     plot_widget.addItem(plot_curve_ch2_filtered)
 
+    layout.addWidget(plot_widget)
+
     # Data connectors
     data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=4000)
     data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=4000)
@@ -125,7 +130,7 @@ def initialize_plot():
         plot_curve_ch2_filtered, max_points=4000
     )
 
-    plot_widget.show()
+    layout.show()
 
     plot_classes = {
         "dc_ch3": data_connector_ch3,
