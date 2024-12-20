@@ -73,7 +73,7 @@ class IncrementalConvolution:
             self.big_convolution += list(new_valid_part)
 
         # TODO: remove old data from y_data to keep only necessary part for next convolutions?
-        return self.big_convolution
+        return new_valid_part
 
 
 def initialize_plot():
@@ -224,7 +224,12 @@ async def plotter2(plot_classes, shutdown_event):
                 ch2_filtered_tared = np.array(ch2_filtered_data) - tare_offset[0]
                 ch3_filtered_tared = np.array(ch3_filtered_data) - tare_offset[1]
 
-                x_data_filtered = x_data[filter_delay:]
+                x_data_filtered = list(
+                    range(
+                        x_data[0] + filter_delay,
+                        x_data[0] + filter_delay + ch2_filtered_tared.shape[0],
+                    )
+                )
 
                 plot_classes["dc_ch3_filtered_tared"].cb_append_data_array(
                     ch3_filtered_tared, x_data_filtered
