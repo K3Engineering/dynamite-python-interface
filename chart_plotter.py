@@ -83,6 +83,33 @@ def initialize_plot():
     layout = pg.LayoutWidget()
     layout.layout.setSpacing(0)
 
+    def configure_histogram(
+        title,
+        primary_label,
+        curve_configs,
+        # secondary_axis_label,
+        # secondary_conversion,
+        # tertiary_axis_label,
+        # tertiary_conversion,
+    ):
+        plot_widget = LivePlotWidget(title=title)
+        plot_item = plot_widget.plotItem
+        plot_item.setLabels(bottom=primary_label)
+
+        assert len(curve_configs) == 2
+
+        curve_hist = LiveLinePlot(
+            pen=curve_configs[0]["pen"], name=curve_configs[0]["name"]
+        )
+        plot_widget.addItem(curve_hist)
+
+        curve_gaussian = LiveLinePlot(
+            pen=curve_configs[1]["pen"], name=curve_configs[1]["name"]
+        )
+        plot_widget.addItem(curve_gaussian)
+
+        return plot_widget, plot_item, [curve_hist, curve_gaussian]
+
     def configure_plot(
         title,
         left_label,
@@ -171,8 +198,20 @@ def initialize_plot():
         tertiary_conversion=KG_CONVERSION,
     )
 
+    # Configure histogram and Gaussian plot
+    hist_curve_configs = [
+        {"pen": "b", "name": "Histogram"},
+        {"pen": "r", "name": "Gaussian Fit"},
+    ]
+    hist_plot_widget, hist_plot_item, hist_curves = configure_histogram(
+        title="Histogram and Gaussian Fit",
+        primary_label="Frequency",
+        curve_configs=hist_curve_configs,
+    )
+
     layout.addWidget(raw_plot_widget, row=0, col=0)
     layout.addWidget(filtered_plot_widget, row=1, col=0)
+    layout.addWidget(hist_plot_widget, row=0, col=1)
 
     # Data connectors
     data_connectors = {
@@ -180,6 +219,8 @@ def initialize_plot():
         "dc_ch2": DataConnector(raw_curves[1], max_points=4000),
         "dc_ch3_filtered_tared": DataConnector(filtered_curves[0], max_points=4000),
         "dc_ch2_filtered_tared": DataConnector(filtered_curves[1], max_points=4000),
+        "dc_histogram": DataConnector(hist_curves[0], max_points=100),
+        "dc_gaussian": DataConnector(hist_curves[1], max_points=100),
     }
 
     layout.show()
@@ -188,8 +229,10 @@ def initialize_plot():
         **data_connectors,
         "pw": raw_plot_widget,
         "pw_filtered": filtered_plot_widget,
+        "pw_hist": hist_plot_widget,
         "p1": raw_plot_item,
         "p4": filtered_plot_item,
+        "ph": hist_plot_item,
         "layout": layout,
     }
 
@@ -199,7 +242,6 @@ def initialize_plot():
 async def plotter2(plot_classes, shutdown_event):
     """Handles real-time plotting using pglive."""
     x_data = []
-    # y_data_3, y_data_2 = [], []
     data_counter = 0
     kernel = gen_lowpass_filter_kernel()
     filter_delay = len(kernel) // 2
@@ -256,6 +298,20 @@ async def plotter2(plot_classes, shutdown_event):
 
             plot_classes["dc_ch3"].cb_append_data_array(ch3_data, x_data)
             plot_classes["dc_ch2"].cb_append_data_array(ch2_data, x_data)
+
+            # Calculate histogram and Gaussian fit
+            hist, bin_edges = np.histogram(ch3_data, bins=30, density=True)
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+            mean_ch3 = np.mean(ch3_data)
+            std_ch3 = np.std(ch3_data)
+            gaussian_fit = (1 / (std_ch3 * np.sqrt(2 * np.pi))) * np.exp(
+                -0.5 * ((bin_centers - mean_ch3) / std_ch3) ** 2
+            )
+
+            # Update histogram and Gaussian data
+            plot_classes["dc_histogram"].cb_set_data(bin_centers, hist)
+            plot_classes["dc_gaussian"].cb_set_data(bin_centers, gaussian_fit)
 
         await asyncio.sleep(0.01)
 
