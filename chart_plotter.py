@@ -141,6 +141,7 @@ def initialize_plot():
         "p1": p1,
         "p2": p2,
         "p3": p3,
+        "layout": layout,
     }
 
     return plot_classes
