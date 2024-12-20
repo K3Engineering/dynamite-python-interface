@@ -96,10 +96,8 @@ def decode_packet_24bit(packet: bytearray) -> list[int]:
 
         for channel in range(4):
             base_index = 2 + channel * 3
-            int_value = (
-                (sub_packet[base_index + 2] << 16)
-                | (sub_packet[base_index + 1] << 8)
-                | sub_packet[base_index]
+            int_value = int.from_bytes(
+                sub_packet[base_index : base_index + 3], byteorder="big"
             )
 
             # Convert to signed 24-bit integer
