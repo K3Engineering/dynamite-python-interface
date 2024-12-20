@@ -30,7 +30,7 @@ MICROVOLT_CONVERSION = FSR / (2**RESOLUTION_BITS) * 1000 * 1000
 LC_VOLTS = 2
 KG_CONVERSION = 200 * 1000 / 2 / LC_VOLTS / 1000 / 1000 / 1000
 SAMPLE_RATE = 1000
-TARING_THRESHOLD = 1.0  # uV value
+TARING_THRESHOLD_UV = 1.0  # uV value
 
 
 def gen_lowpass_filter_kernel():
@@ -83,7 +83,8 @@ def initialize_plot():
     layout = pg.LayoutWidget()
     layout.layout.setSpacing(0)
 
-    plot_widget = LivePlotWidget(title="Real-time Data Plot")
+    # Main plot widget for raw data
+    plot_widget = LivePlotWidget(title="Real-time Data Plot (Raw Signals)")
     p1 = plot_widget.plotItem
     p1.setLabels(left="Raw ADC values")
 
@@ -136,19 +137,29 @@ def initialize_plot():
     # Add items to the widget
     plot_widget.addItem(plot_curve_ch3)
     plot_widget.addItem(plot_curve_ch2)
-    plot_widget.addItem(plot_curve_ch3_filtered)
-    plot_widget.addItem(plot_curve_ch2_filtered)
 
-    layout.addWidget(plot_widget)
+    # Add a second plot widget for filtered and tared data
+    plot_widget_filtered = LivePlotWidget(title="Filtered and Tared Signals")
+    p4 = plot_widget_filtered.plotItem
+    p4.setLabels(left="Filtered ADC values")
+
+    plot_curve_ch3_filtered_tared = LiveLinePlot(pen="g", name="ch3 (filtered, tared)")
+    plot_curve_ch2_filtered_tared = LiveLinePlot(pen="b", name="ch2 (filtered, tared)")
+
+    plot_widget_filtered.addItem(plot_curve_ch3_filtered_tared)
+    plot_widget_filtered.addItem(plot_curve_ch2_filtered_tared)
+
+    layout.addWidget(plot_widget, row=0, col=0)
+    layout.addWidget(plot_widget_filtered, row=1, col=0)
 
     # Data connectors
     data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=4000)
     data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=4000)
-    data_connector_ch3_filtered = DataConnector(
-        plot_curve_ch3_filtered, max_points=4000
+    data_connector_ch3_filtered_tared = DataConnector(
+        plot_curve_ch3_filtered_tared, max_points=4000
     )
-    data_connector_ch2_filtered = DataConnector(
-        plot_curve_ch2_filtered, max_points=4000
+    data_connector_ch2_filtered_tared = DataConnector(
+        plot_curve_ch2_filtered_tared, max_points=4000
     )
 
     layout.show()
@@ -156,9 +167,10 @@ def initialize_plot():
     plot_classes = {
         "dc_ch3": data_connector_ch3,
         "dc_ch2": data_connector_ch2,
-        "dc_ch3_filtered": data_connector_ch3_filtered,
-        "dc_ch2_filtered": data_connector_ch2_filtered,
+        "dc_ch3_filtered_tared": data_connector_ch3_filtered_tared,
+        "dc_ch2_filtered_tared": data_connector_ch2_filtered_tared,
         "pw": plot_widget,
+        "pw_filtered": plot_widget_filtered,
         "p1": p1,
         "p2": p2,
         "p3": p3,
@@ -171,9 +183,10 @@ def initialize_plot():
 async def plotter2(plot_classes, shutdown_event):
     """Handles real-time plotting using pglive."""
     x_data = []
-    y_data_3, y_data_2 = [], []
+    # y_data_3, y_data_2 = [], []
     data_counter = 0
     kernel = gen_lowpass_filter_kernel()
+    filter_delay = len(kernel) // 2
 
     ch3_filtered = IncrementalConvolution(kernel)
     ch2_filtered = IncrementalConvolution(kernel)
@@ -198,17 +211,27 @@ async def plotter2(plot_classes, shutdown_event):
 
             # Calculate taring if conditions are met
             if (
-                np.std(ch2_data) < TARING_THRESHOLD
-                and np.std(ch3_data) < TARING_THRESHOLD
-                and len(x_data) > SAMPLE_RATE * 2
+                np.std(ch2_data) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
+                and np.std(ch3_data) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
+                and data_counter > SAMPLE_RATE * 2
                 and not tared
             ):
                 tare_offset = [np.mean(ch2_data), np.mean(ch3_data)]
+                print("Tared!")
                 tared = True
 
             if tared:
                 ch2_filtered_tared = np.array(ch2_filtered_data) - tare_offset[0]
                 ch3_filtered_tared = np.array(ch3_filtered_data) - tare_offset[1]
+
+                x_data_filtered = x_data[filter_delay:]
+
+                plot_classes["dc_ch3_filtered_tared"].cb_append_data_array(
+                    ch3_filtered_tared, x_data_filtered
+                )
+                plot_classes["dc_ch2_filtered_tared"].cb_append_data_array(
+                    ch2_filtered_tared, x_data_filtered
+                )
 
             plot_classes["dc_ch3"].cb_append_data_array(ch3_data, x_data)
             plot_classes["dc_ch2"].cb_append_data_array(ch2_data, x_data)
@@ -358,8 +381,8 @@ def plotter(shutdown_event):
             kg_std_ch2 = uV_std_ch2 * KG_CONVERSION
 
             if (
-                uV_std_ch2 < TARING_THRESHOLD
-                and uV_std_ch3 < TARING_THRESHOLD
+                uV_std_ch2 < TARING_THRESHOLD_UV
+                and uV_std_ch3 < TARING_THRESHOLD_UV
                 and len(x_data) > SAMPLE_RATE * 2
             ):
                 if not tared:
