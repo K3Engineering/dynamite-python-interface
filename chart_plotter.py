@@ -83,97 +83,113 @@ def initialize_plot():
     layout = pg.LayoutWidget()
     layout.layout.setSpacing(0)
 
-    # Main plot widget for raw data
-    plot_widget = LivePlotWidget(title="Real-time Data Plot (Raw Signals)")
-    p1 = plot_widget.plotItem
-    p1.setLabels(left="Raw ADC values")
+    def configure_plot(
+        title,
+        left_label,
+        curve_configs,
+        secondary_axis_label,
+        secondary_conversion,
+        tertiary_axis_label,
+        tertiary_conversion,
+    ):
+        """Configures a plot with primary, secondary, and tertiary Y-axes."""
+        plot_widget = LivePlotWidget(title=title)
+        plot_item = plot_widget.plotItem
+        plot_item.setLabels(left=left_label)
 
-    # Main raw ADC plots
-    plot_curve_ch3 = LiveLinePlot(pen="r", name="ch3")
-    plot_curve_ch2 = LiveLinePlot(pen="orange", name="ch2")
+        curves = [
+            LiveLinePlot(pen=config["pen"], name=config["name"])
+            for config in curve_configs
+        ]
+        for curve in curves:
+            plot_widget.addItem(curve)
 
-    # Filtered signal plots
-    plot_curve_ch3_filtered = LiveLinePlot(pen="g", name="ch3 (filtered)")
-    plot_curve_ch2_filtered = LiveLinePlot(pen="b", name="ch2 (filtered)")
+        # Secondary axis
+        secondary_view = pg.ViewBox()
+        plot_item.showAxis("right")
+        plot_item.scene().addItem(secondary_view)
+        plot_item.getAxis("right").linkToView(secondary_view)
+        secondary_view.setXLink(plot_item)
+        plot_item.getAxis("right").setLabel(secondary_axis_label)
 
-    # Secondary axes for µV and kg
-    p2 = pg.ViewBox()
-    p1.showAxis("right")
-    p1.scene().addItem(p2)
-    p1.getAxis("right").linkToView(p2)
-    p2.setXLink(p1)
-    p1.getAxis("right").setLabel("Microvolts (µV)")
-    p2.setGeometry(p1.vb.geometry())
+        # Apply scaling for secondary axis
+        def update_secondary_view():
+            view_range = plot_item.vb.viewRange()
+            secondary_view.setYRange(
+                view_range[1][0] * secondary_conversion,
+                view_range[1][1] * secondary_conversion,
+            )
 
-    # Apply scaling for µV axis
-    def update_p2_view():
-        p2_range = p1.vb.viewRange()
-        p2.setYRange(
-            p2_range[1][0] * MICROVOLT_CONVERSION, p2_range[1][1] * MICROVOLT_CONVERSION
-        )
+        plot_item.vb.sigYRangeChanged.connect(update_secondary_view)
 
-    p1.vb.sigYRangeChanged.connect(update_p2_view)
+        # Tertiary axis
+        tertiary_view = pg.ViewBox()
+        tertiary_axis = pg.AxisItem("right")
+        plot_item.layout.addItem(tertiary_axis, 2, 3)
+        plot_item.scene().addItem(tertiary_view)
+        tertiary_axis.linkToView(tertiary_view)
+        tertiary_view.setXLink(plot_item)
+        tertiary_axis.setZValue(-10000)
+        tertiary_axis.setLabel(tertiary_axis_label)
 
-    p3 = pg.ViewBox()
-    ax3 = pg.AxisItem("right")
-    p1.layout.addItem(ax3, 2, 3)
-    p1.scene().addItem(p3)
-    ax3.linkToView(p3)
-    p3.setXLink(p1)
-    ax3.setZValue(-10000)
-    ax3.setLabel("Kilograms (kg)")
-    p3.setGeometry(p1.vb.geometry())
+        # Apply scaling for tertiary axis
+        def update_tertiary_view():
+            view_range = plot_item.vb.viewRange()
+            tertiary_view.setYRange(
+                view_range[1][0] * secondary_conversion * tertiary_conversion,
+                view_range[1][1] * secondary_conversion * tertiary_conversion,
+            )
 
-    # Apply scaling for kg axis
-    def update_p3_view():
-        p3_range = p1.vb.viewRange()
-        p3.setYRange(
-            p3_range[1][0] * MICROVOLT_CONVERSION * KG_CONVERSION,
-            p3_range[1][1] * MICROVOLT_CONVERSION * KG_CONVERSION,
-        )
+        plot_item.vb.sigYRangeChanged.connect(update_tertiary_view)
 
-    p1.vb.sigYRangeChanged.connect(update_p3_view)
+        return plot_widget, plot_item, curves
 
-    # Add items to the widget
-    plot_widget.addItem(plot_curve_ch3)
-    plot_widget.addItem(plot_curve_ch2)
+    # Configure raw data plot
+    raw_curve_configs = [{"pen": "r", "name": "ch3"}, {"pen": "orange", "name": "ch2"}]
+    raw_plot_widget, raw_plot_item, raw_curves = configure_plot(
+        title="Real-time Data Plot (Raw Signals)",
+        left_label="Raw ADC values",
+        curve_configs=raw_curve_configs,
+        secondary_axis_label="Microvolts (µV)",
+        secondary_conversion=MICROVOLT_CONVERSION,
+        tertiary_axis_label="Kilograms (kg)",
+        tertiary_conversion=KG_CONVERSION,
+    )
 
-    # Add a second plot widget for filtered and tared data
-    plot_widget_filtered = LivePlotWidget(title="Filtered and Tared Signals")
-    p4 = plot_widget_filtered.plotItem
-    p4.setLabels(left="Filtered ADC values")
+    # Configure filtered and tared data plot
+    filtered_curve_configs = [
+        {"pen": "r", "name": "ch3 (filtered, tared)"},
+        {"pen": "orange", "name": "ch2 (filtered, tared)"},
+    ]
+    filtered_plot_widget, filtered_plot_item, filtered_curves = configure_plot(
+        title="Filtered and Tared Signals",
+        left_label="Filtered ADC values",
+        curve_configs=filtered_curve_configs,
+        secondary_axis_label="Microvolts (µV)",
+        secondary_conversion=MICROVOLT_CONVERSION,
+        tertiary_axis_label="Kilograms (kg)",
+        tertiary_conversion=KG_CONVERSION,
+    )
 
-    plot_curve_ch3_filtered_tared = LiveLinePlot(pen="g", name="ch3 (filtered, tared)")
-    plot_curve_ch2_filtered_tared = LiveLinePlot(pen="b", name="ch2 (filtered, tared)")
-
-    plot_widget_filtered.addItem(plot_curve_ch3_filtered_tared)
-    plot_widget_filtered.addItem(plot_curve_ch2_filtered_tared)
-
-    layout.addWidget(plot_widget, row=0, col=0)
-    layout.addWidget(plot_widget_filtered, row=1, col=0)
+    layout.addWidget(raw_plot_widget, row=0, col=0)
+    layout.addWidget(filtered_plot_widget, row=1, col=0)
 
     # Data connectors
-    data_connector_ch3 = DataConnector(plot_curve_ch3, max_points=4000)
-    data_connector_ch2 = DataConnector(plot_curve_ch2, max_points=4000)
-    data_connector_ch3_filtered_tared = DataConnector(
-        plot_curve_ch3_filtered_tared, max_points=4000
-    )
-    data_connector_ch2_filtered_tared = DataConnector(
-        plot_curve_ch2_filtered_tared, max_points=4000
-    )
+    data_connectors = {
+        "dc_ch3": DataConnector(raw_curves[0], max_points=4000),
+        "dc_ch2": DataConnector(raw_curves[1], max_points=4000),
+        "dc_ch3_filtered_tared": DataConnector(filtered_curves[0], max_points=4000),
+        "dc_ch2_filtered_tared": DataConnector(filtered_curves[1], max_points=4000),
+    }
 
     layout.show()
 
     plot_classes = {
-        "dc_ch3": data_connector_ch3,
-        "dc_ch2": data_connector_ch2,
-        "dc_ch3_filtered_tared": data_connector_ch3_filtered_tared,
-        "dc_ch2_filtered_tared": data_connector_ch2_filtered_tared,
-        "pw": plot_widget,
-        "pw_filtered": plot_widget_filtered,
-        "p1": p1,
-        "p2": p2,
-        "p3": p3,
+        **data_connectors,
+        "pw": raw_plot_widget,
+        "pw_filtered": filtered_plot_widget,
+        "p1": raw_plot_item,
+        "p4": filtered_plot_item,
         "layout": layout,
     }
 
