@@ -102,6 +102,16 @@ def initialize_plot():
     p1.getAxis("right").linkToView(p2)
     p2.setXLink(p1)
     p1.getAxis("right").setLabel("Microvolts (µV)")
+    p2.setGeometry(p1.vb.geometry())
+
+    # Apply scaling for µV axis
+    def update_p2_view():
+        p2_range = p1.vb.viewRange()
+        p2.setYRange(
+            p2_range[1][0] * MICROVOLT_CONVERSION, p2_range[1][1] * MICROVOLT_CONVERSION
+        )
+
+    p1.vb.sigYRangeChanged.connect(update_p2_view)
 
     p3 = pg.ViewBox()
     ax3 = pg.AxisItem("right")
@@ -111,6 +121,17 @@ def initialize_plot():
     p3.setXLink(p1)
     ax3.setZValue(-10000)
     ax3.setLabel("Kilograms (kg)")
+    p3.setGeometry(p1.vb.geometry())
+
+    # Apply scaling for kg axis
+    def update_p3_view():
+        p3_range = p1.vb.viewRange()
+        p3.setYRange(
+            p3_range[1][0] * MICROVOLT_CONVERSION * KG_CONVERSION,
+            p3_range[1][1] * MICROVOLT_CONVERSION * KG_CONVERSION,
+        )
+
+    p1.vb.sigYRangeChanged.connect(update_p3_view)
 
     # Add items to the widget
     plot_widget.addItem(plot_curve_ch3)
