@@ -87,16 +87,22 @@ def initialize_plot():
         title,
         primary_label,
         curve_configs,
-        # secondary_axis_label,
-        # secondary_conversion,
-        # tertiary_axis_label,
-        # tertiary_conversion,
+        linked_y_axis_view,
     ):
         plot_widget = LivePlotWidget(title=title)
         plot_item = plot_widget.plotItem
-        plot_item.setLabels(bottom=primary_label)
+        plot_item.setLabels(left=primary_label)
+
+        linked_y_axis_view.setYLink(None)
+        plot_item.enableAutoRange(enable=False)
 
         assert len(curve_configs) == 2
+
+        def update_hist_view():
+            linked_range = linked_y_axis_view.viewRange()
+            # print("update_hist", linked_range)
+            # plot_item.setYRange(linked_range[1][0], linked_range[1][1])
+            # plot_item.setYRange(1000, 100000)
 
         curve_hist = LiveLinePlot(
             pen=curve_configs[0]["pen"], name=curve_configs[0]["name"]
@@ -107,6 +113,9 @@ def initialize_plot():
             pen=curve_configs[1]["pen"], name=curve_configs[1]["name"]
         )
         plot_widget.addItem(curve_gaussian)
+
+        # Link histogram Y-axis to the provided view
+        linked_y_axis_view.sigYRangeChanged.connect(update_hist_view)
 
         return plot_widget, plot_item, [curve_hist, curve_gaussian]
 
@@ -203,10 +212,12 @@ def initialize_plot():
         {"pen": "b", "name": "Histogram"},
         {"pen": "r", "name": "Gaussian Fit"},
     ]
+    raw_plot_item.enableAutoRange(enable=False)
     hist_plot_widget, hist_plot_item, hist_curves = configure_histogram(
         title="Histogram and Gaussian Fit",
         primary_label="Frequency",
         curve_configs=hist_curve_configs,
+        linked_y_axis_view=raw_plot_item.vb,  # Link to raw plot's primary Y-axis
     )
 
     layout.addWidget(raw_plot_widget, row=0, col=0)
