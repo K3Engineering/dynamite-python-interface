@@ -78,6 +78,19 @@ class IncrementalConvolution:
         return new_valid_part
 
 
+def calculate_hist(data_full):
+    # Calculate histogram and Gaussian fit
+    hist, bin_edges = np.histogram(data_full, bins=100, density=True)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    mean_ch3 = np.mean(data_full[-4000:])
+    std_ch3 = np.std(data_full[-4000:])
+    gaussian_fit = (1 / (std_ch3 * np.sqrt(2 * np.pi))) * np.exp(
+        -0.5 * ((bin_centers - mean_ch3) / std_ch3) ** 2
+    )
+    return hist, gaussian_fit, bin_centers
+
+
 def initialize_plot():
     """Initializes the pglive plot widget and connectors with advanced features."""
     pg.setConfigOptions(antialias=True)
@@ -217,7 +230,7 @@ def initialize_plot():
     raw_plot_item.enableAutoRange(enable=False)
     hist_plot_widget, hist_plot_item, hist_curves = configure_histogram(
         title="Histogram and Gaussian Fit",
-        primary_label="Frequency",
+        primary_label="ADC Value",
         curve_configs=hist_curve_configs,
         linked_y_axis_view=raw_plot_item.vb,  # Link to raw plot's primary Y-axis
     )
@@ -319,18 +332,11 @@ async def plotter2(plot_classes, shutdown_event):
             plot_classes["dc_ch2"].cb_append_data_array(ch2_data, x_data)
 
             # Calculate histogram and Gaussian fit
-            hist, bin_edges = np.histogram(ch2_data_full, bins=30, density=True)
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-            mean_ch3 = np.mean(ch3_data_full)
-            std_ch3 = np.std(ch3_data_full)
-            gaussian_fit = (1 / (std_ch3 * np.sqrt(2 * np.pi))) * np.exp(
-                -0.5 * ((bin_centers - mean_ch3) / std_ch3) ** 2
-            )
+            hist_ch3, gaussian_fit_ch3, bin_centers_ch3 = calculate_hist(ch3_data_full)
 
             # Update histogram and Gaussian data
-            plot_classes["dc_histogram"].cb_set_data(bin_centers, hist)
-            plot_classes["dc_gaussian"].cb_set_data(bin_centers, gaussian_fit)
+            plot_classes["dc_histogram"].cb_set_data(bin_centers_ch3, hist_ch3)
+            plot_classes["dc_gaussian"].cb_set_data(bin_centers_ch3, gaussian_fit_ch3)
 
         await asyncio.sleep(0.01)
 
