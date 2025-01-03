@@ -265,6 +265,9 @@ async def plotter2(plot_classes, shutdown_event):
     tared = False
     tare_offset = [0, 0]
 
+    ch3_data_full = []
+    ch2_data_full = []
+
     while not shutdown_event.is_set():  # TODO asyncio queue
         if not plotting_queue.empty():
             message = plotting_queue.get_nowait()
@@ -276,18 +279,21 @@ async def plotter2(plot_classes, shutdown_event):
             ch3_data = [sample["channels"][2] for sample in message]
             ch2_data = [sample["channels"][1] for sample in message]
 
+            ch3_data_full.extend(ch3_data)
+            ch2_data_full.extend(ch2_data)
+
             # Apply filtering
             ch3_filtered_data = ch3_filtered.process(ch3_data)
             ch2_filtered_data = ch2_filtered.process(ch2_data)
 
             # Calculate taring if conditions are met
             if (
-                np.std(ch2_data) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
-                and np.std(ch3_data) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
+                np.std(ch2_data_full) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
+                and np.std(ch3_data_full) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
                 and data_counter > SAMPLE_RATE * 2
                 and not tared
             ):
-                tare_offset = [np.mean(ch2_data), np.mean(ch3_data)]
+                tare_offset = [np.mean(ch2_data_full), np.mean(ch3_data_full)]
                 print("Tared!")
                 tared = True
 
@@ -313,11 +319,11 @@ async def plotter2(plot_classes, shutdown_event):
             plot_classes["dc_ch2"].cb_append_data_array(ch2_data, x_data)
 
             # Calculate histogram and Gaussian fit
-            hist, bin_edges = np.histogram(ch3_data, bins=30, density=True)
+            hist, bin_edges = np.histogram(ch2_data_full, bins=30, density=True)
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
-            mean_ch3 = np.mean(ch3_data)
-            std_ch3 = np.std(ch3_data)
+            mean_ch3 = np.mean(ch3_data_full)
+            std_ch3 = np.std(ch3_data_full)
             gaussian_fit = (1 / (std_ch3 * np.sqrt(2 * np.pi))) * np.exp(
                 -0.5 * ((bin_centers - mean_ch3) / std_ch3) ** 2
             )
