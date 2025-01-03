@@ -63,14 +63,16 @@ class IncrementalConvolution:
         valid_length = len(self.y_data) - len(self.kernel) + 1
         to_compute_length = valid_length - len(self.big_convolution)
 
-        if to_compute_length > 0:
-            # mode='valid' outputs (signal - kernel + 1) size. We give it (signal - kernel + 1)
-            new_valid_part = np.convolve(
-                self.y_data[-to_compute_length - len(self.kernel) + 1 :],
-                self.kernel,
-                mode="valid",
-            )
-            self.big_convolution += list(new_valid_part)
+        if to_compute_length <= 0:
+            return []
+
+        # mode='valid' outputs (signal - kernel + 1) size. We give it (signal - kernel + 1)
+        new_valid_part = np.convolve(
+            self.y_data[-to_compute_length - len(self.kernel) + 1 :],
+            self.kernel,
+            mode="valid",
+        )
+        self.big_convolution += list(new_valid_part)
 
         # TODO: remove old data from y_data to keep only necessary part for next convolutions?
         return new_valid_part
