@@ -130,7 +130,7 @@ async def print_count_stats_per_second(event, shutdown_event):
         count = len(len_queue)
 
         min_count = math.inf
-        max_count = -math.inf
+        max_count = 0
         avg_count = 0
         sum_count = 0
 
