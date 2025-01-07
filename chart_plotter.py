@@ -80,7 +80,7 @@ class IncrementalConvolution:
 
 def calculate_hist(data_full):
     # Calculate histogram and Gaussian fit
-    hist, bin_edges = np.histogram(data_full, bins=100, density=True)
+    hist, bin_edges = np.histogram(data_full[-4000:], bins=100, density=True)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
     mean_ch3 = np.mean(data_full[-4000:])
