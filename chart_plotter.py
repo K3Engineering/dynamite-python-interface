@@ -281,6 +281,8 @@ async def plotter2(plot_classes, shutdown_event):
     ch3_data_full = []
     ch2_data_full = []
 
+    i = 0
+
     while not shutdown_event.is_set():  # TODO asyncio queue
         if not plotting_queue.empty():
             message = plotting_queue.get_nowait()
@@ -334,9 +336,16 @@ async def plotter2(plot_classes, shutdown_event):
             # Calculate histogram and Gaussian fit
             hist_ch3, gaussian_fit_ch3, bin_centers_ch3 = calculate_hist(ch3_data_full)
 
+            if len(ch3_data_full) > 400 and i % 20 == 0:
+                std_dev_ch2 = np.std(ch2_data_full[-4000:])
+                std_dev_ch3 = np.std(ch3_data_full[-4000:])
+                print("std", std_dev_ch2, std_dev_ch3)
+
             # Update histogram and Gaussian data
             plot_classes["dc_histogram"].cb_set_data(bin_centers_ch3, hist_ch3)
             plot_classes["dc_gaussian"].cb_set_data(bin_centers_ch3, gaussian_fit_ch3)
+
+            i += 1
 
         await asyncio.sleep(0.01)
 
