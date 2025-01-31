@@ -83,8 +83,9 @@ def calculate_hist(data_full):
     hist, bin_edges = np.histogram(data_full[-4000:], bins=100, density=True)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
 
+    eps = 1e-10
     mean_ch3 = np.mean(data_full[-4000:])
-    std_ch3 = np.std(data_full[-4000:])
+    std_ch3 = np.std(data_full[-4000:]) + eps
     gaussian_fit = (1 / (std_ch3 * np.sqrt(2 * np.pi))) * np.exp(
         -0.5 * ((bin_centers - mean_ch3) / std_ch3) ** 2
     )
@@ -302,12 +303,7 @@ async def plotter2(plot_classes, shutdown_event):
             ch2_filtered_data = ch2_filtered.process(ch2_data)
 
             # Calculate taring if conditions are met
-            if (
-                np.std(ch2_data_full) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
-                and np.std(ch3_data_full) * MICROVOLT_CONVERSION < TARING_THRESHOLD_UV
-                and data_counter > SAMPLE_RATE * 2
-                and not tared
-            ):
+            if not tared and data_counter > 6000:
                 tare_offset = [np.mean(ch2_data_full), np.mean(ch3_data_full)]
                 print("Tared!")
                 tared = True
@@ -491,14 +487,10 @@ def plotter(shutdown_event):
             kg_mean_ch2 = uV_mean_ch2 * KG_CONVERSION
             kg_std_ch2 = uV_std_ch2 * KG_CONVERSION
 
-            if (
-                uV_std_ch2 < TARING_THRESHOLD_UV
-                and uV_std_ch3 < TARING_THRESHOLD_UV
-                and len(x_data) > SAMPLE_RATE * 2
-            ):
-                if not tared:
-                    tare_offset = [mean_ch2, mean_ch3]
-                    tared = True
+            if not tared and len(x_data) > 6000:
+                print("Tared!")
+                tare_offset = [mean_ch2, mean_ch3]
+                tared = True
 
             eps = 1e-8
 
