@@ -20,6 +20,7 @@ shutdown_event = threading.Event()
 
 async def main(plot_classes):
     replay = False
+    print("REPLAY IS", replay)
 
     subscribers = [update_data]
 
