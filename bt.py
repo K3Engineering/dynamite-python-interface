@@ -58,15 +58,23 @@ class MockDevice:
 
 
 async def find_bluetooth_devices():
-    devices = await BleakScanner.discover()
+    devices_and_adv = await BleakScanner.discover(return_adv=True)
 
     mydevice = None
     print("Found the following devices:")
-    for d in devices:
-        print(d)
-        if d.name and "DS " in d.name:
-            print("Found my device")
-            mydevice = d
+    for device, adv_data in sorted(
+        devices_and_adv.values(), key=lambda t: t[1].rssi, reverse=True
+    ):
+
+        if not mydevice and device.name and "DS " in device.name:
+            print(
+                f"RSSI: {adv_data.rssi}, address: {device.address}, name: *** {device.name} ***"
+            )
+            mydevice = device
+        else:
+            print(
+                f"RSSI: {adv_data.rssi}, address: {device.address}, name: {device.name}"
+            )
 
     return mydevice
 
