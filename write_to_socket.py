@@ -2,6 +2,7 @@
 """Write real-time data to a socket EXPERIMENTAL SCRIPT"""
 
 import asyncio
+from datetime import datetime
 import threading
 
 import socket
@@ -14,7 +15,7 @@ parsed_bt_queue = asyncio.Queue()
 shutdown_event = threading.Event()
 
 
-async def send_queue_data_to_socket(queue):
+async def send_queue_data_to_socket(queue: asyncio.Queue):
 
     ports = [8080, 8081, 8082, 8083]
     servers = []
@@ -24,15 +25,28 @@ async def send_queue_data_to_socket(queue):
         s.connect(("localhost", port))
         servers.append(s)
         print(f"socket connected {port}")
+
+    # TODO: rewrite this, this is a hack
+    start_time = datetime.now()
+    date = start_time.strftime("%Y%m%d_%H%M%S")
+    name = f"./data/datadump_{date}.txt"
+
+    print(f"Opening file {name}")
+
+    file_handle = open(name, "w")
+
     while True:
         message = await queue.get()
         for d in message:
+            # Send to each socket server
             for val, s in zip(d["channels"], servers):
                 val = int(val)
 
                 # send as an integer
                 bytes_to_send = val.to_bytes(4, "little", signed=True)
                 s.send(bytes_to_send)
+            # Write to file
+            print(d, file=file_handle)
 
 
 async def main():
