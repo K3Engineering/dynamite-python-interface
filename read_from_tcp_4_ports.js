@@ -1,4 +1,6 @@
 // Read data from TCP and put in on a reference scope channel
+// Requires waveforms >= 3.23.54 (2025-03-05)
+// https://forum.digilent.com/topic/8908-waveforms-beta-download/
 
 // TCP
 print("start");
