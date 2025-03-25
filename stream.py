@@ -55,4 +55,5 @@ class TQDMPbar(dss.NotifyCallbackRawData):
         self.pbar_bytes.update(len(rawdata))
 
 
+# TODO make a argparse interface
 asyncio.run(dss.dynamite_sampler_connect_notify([TQDMPbar], [FeedDataCSVWriter]))
