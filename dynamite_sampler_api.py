@@ -63,17 +63,6 @@ class DynamiteSampler:
 
                 return feed_datas
 
-        # class FeedData(ctypes.LittleEndianStructure):
-        #     _pack_ = 1
-        #     _fields_ = [
-        #         ("status", ctypes.c_uint16),
-        #         ("ch0", ctypes.c_uint8 * 3),
-        #         ("ch1", ctypes.c_uint8 * 3),
-        #         ("ch2", ctypes.c_uint8 * 3),
-        #         ("ch3", ctypes.c_uint8 * 3),
-        #         ("crc", ctypes.c_uint8),
-        #     ]
-
     class LoadCellCalibration:
         """Characteristic that contains the calibration data. Read only."""
 
@@ -95,6 +84,39 @@ class DynamiteSampler:
             assert len(b) >= format_len
 
             return struct.unpack(cls._format, b[0:format_len])
+
+    class ADCConfig:
+        """Characteristic (Read-only) of the ADC configuration values"""
+
+        UUID = "adcc0f19-2575-4502-9a48-0e99974eb34f"
+
+        class ConfigData:
+            def __init__(
+                self,
+                num_channels: int,
+                power_mode: int,
+                sample_rate: int,
+                gains: list[int],
+            ):
+                self.num_channesl = num_channels
+                self.power_mode = power_mode
+                self.sample_rate = sample_rate
+                self.gains = gains
+
+            def __repr__(self):
+                # TODO: this feels like a bit of a hack for now
+                return str(self.__dict__)
+
+            @classmethod
+            def unpack(cls, b: bytearray | bytes):
+                """Unpack the BLE raw data"""
+                num_ch = b[0]
+                pow_mode = b[1]
+                rate = 32000 // 2 ** b[2]
+
+                gains = [2 ** b[i] for i in range(3, 3 + num_ch)]
+
+                return cls(num_ch, pow_mode, rate, gains)
 
 
 class OTA:

@@ -85,7 +85,8 @@ async def dynamite_sampler_connect_notify(
     async with bleak.BleakClient(device, disconnected_callback=disco) as client:
         print("Connected!")
 
-        # TODO read the device info & loadcell calibration
+        # read the device info & other meta data
+        # TODO make this programmatic so that it doesn't fail if the UUID isn't there
         fw_uuid = bleak.uuids.normalize_uuid_16(ds.DeviceInfo.FirmwareRevision.UUID)
         firmware = str(await client.read_gatt_char(fw_uuid), "utf-8")
 
@@ -95,10 +96,14 @@ async def dynamite_sampler_connect_notify(
         loadcell_calib = ds.DynamiteSampler.LoadCellCalibration.unpack(
             await client.read_gatt_char(ds.DynamiteSampler.LoadCellCalibration.UUID)
         )
+        adc_config = ds.DynamiteSampler.ADCConfig.ConfigData.unpack(
+            await client.read_gatt_char(ds.DynamiteSampler.ADCConfig.UUID)
+        )
         dev_info = {
             "FirmwareRevision": firmware,
             "ManufacturerName": manufacture,
             "LoadcellCalibration": loadcell_calib,
+            "ADCConfig": adc_config,
         }
 
         # Setting up callbacks

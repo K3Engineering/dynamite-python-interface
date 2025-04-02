@@ -161,5 +161,5 @@ class SocketStream(dss.NotifyCallbackFeeddatas):
 # callbacks_raw = [TQDMPbar]
 # callbacks_feeddata = [FeedDataCSVWriter, SocketStream]
 callbacks_raw = [MetricsPrinter]
-callbacks_feeddata = [FeedDataCSVWriter, SocketStream]
+callbacks_feeddata = [FeedDataCSVWriter]
 asyncio.run(dss.dynamite_sampler_connect_notify(callbacks_raw, callbacks_feeddata))
