@@ -14,6 +14,9 @@ class NotifyCallbackRawData:
     def callback(self, rawdata: bytes):
         raise NotImplementedError
 
+    def cleanup(self):
+        pass
+
 
 class NotifyCallbackFeeddatas:
 
@@ -22,6 +25,9 @@ class NotifyCallbackFeeddatas:
 
     def callback(self, feeddatas: list[ds.DynamiteSampler.ADCFeed.FeedData]):
         raise NotImplementedError
+
+    def cleanup(self):
+        pass
 
 
 async def find_dynamite_samplers():
@@ -63,8 +69,17 @@ async def dynamite_sampler_connect_notify(
 
     device = devices_and_adv[i_dev][0]
 
+    callbacks_raw = []
+    callbacks_feeddata = []
+
     def disco(dev):
-        print("disco callback for:", dev)
+        for cbr in callbacks_raw:
+            cbr.cleanup()
+
+        for cbfd in callbacks_feeddata:
+            cbfd.cleanup()
+
+        print("disconnection callback finished for:", dev)
 
     print("Connecting to:", device)
     async with bleak.BleakClient(device, disconnected_callback=disco) as client:
