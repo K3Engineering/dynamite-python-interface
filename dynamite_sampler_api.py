@@ -84,10 +84,10 @@ class DynamiteSampler:
         _format = "II"
 
         @classmethod
-        def generate_calibration_raw(cls, data1: int, data2: int) -> bytes:
+        def pack(cls, data1: int, data2: int) -> bytes:
             """Generate the raw bytes to be flashed to the calibration partition"""
             # TODO this format needs to be synced between this script and the client.
-            return struct.pack(cls._format, data1, data2)
+            return struct.pack(cls._format, int(data1), int(data2))
 
         @classmethod
         def unpack(cls, b: bytes | bytearray) -> tuple[int, int]:
