@@ -16,7 +16,10 @@ import dynamite_sampler_streamer as dss
 class FeedDataCSVWriter(dss.NotifyCallbackFeeddatas):
     """This class writes FeedData to a CSV file"""
 
-    def __init__(self, device_dict):
+    def __init__(self):
+        pass  # TODO
+
+    def setup(self, device_dict):
         # print("init csv writer", device_dict)
 
         start_time = datetime.datetime.now()
@@ -47,15 +50,19 @@ class FeedDataCSVWriter(dss.NotifyCallbackFeeddatas):
 class TQDMPbar(dss.NotifyCallbackRawData):
     """Use TQDM to show packet metrics"""
 
-    def __init__(self, device_dict):
+    def __init__(self):
         # Import tqdm inside the class so that if the class isn't used, the import is
         # optional.
         from tqdm import tqdm
 
-        self.pbar_packets = tqdm(
-            desc="Total packets:", unit="packets", position=0, smoothing=1
+        self.tqdm = tqdm
+
+    def setup(self, device_dict):
+
+        self.pbar_packets = self.tqdm(
+            desc="Total packets", unit="packets", position=0, smoothing=1
         )
-        self.pbar_bytes = tqdm(
+        self.pbar_bytes = self.tqdm(
             desc="Total bytes", unit="bytes", position=1, unit_scale=True, smoothing=1
         )
 
@@ -71,17 +78,27 @@ class TQDMPbar(dss.NotifyCallbackRawData):
 class MetricsPrinter(dss.NotifyCallbackRawData):
     """Print metrics on the same line using \r"""
 
-    def __init__(self, device_dict):
+    def __init__(self, n_sample_avg: int = 15, print_dt: float = 0.1):
+        """
+        n_sample_avg: how many sample raw sample metrics to average
+        print_dt:   [Seconds] The minimum time between printing the delta.
+                    This makes the metrics more readable since it doesn't flicker as often.
+        """
+        self.queue_len = int(n_sample_avg)
+        self.print_dt = float(print_dt)
+
+    def setup(self, device_dict):
         self.prev_time = time.time()  # The previous time a callback was called
         self.prev_time_print = 0.0  # Previous time when a metric was printed
         self.total_packets: int = 0
         self.total_bytes: int = 0
         self.start_time = None  # When the first callback was called
 
-        queue_len = 15  # To do averaging of the past n callbacks
-        self.q_dt = collections.deque((), queue_len)
+        # Save the past N metrics for averaging. There is always one packet per call,
+        # so no need to save that.
+        self.q_dt = collections.deque((), self.queue_len)
         # self.q_packets = collections.deque((), queue_len)
-        self.q_bytes = collections.deque((), queue_len)
+        self.q_bytes = collections.deque((), self.queue_len)
 
     def callback(self, rawdata):
         ## Time calculations
@@ -103,7 +120,7 @@ class MetricsPrinter(dss.NotifyCallbackRawData):
         self.q_bytes.append(rawdata_len)
 
         ## Metric calculations, update less frequently to make it easier to read
-        if cur_time - self.prev_time_print > 0.1:
+        if cur_time - self.prev_time_print > self.print_dt:
             self.prev_time_print = cur_time
             elapsed_time = datetime.timedelta(seconds=cur_time - self.start_time)
 
@@ -132,11 +149,15 @@ class SocketStream(dss.NotifyCallbackFeeddatas):
     """Stream each channel to a TCP localhost socket.
     Intended for to be used with waveforms & the `read_from_tcp_4_ports.js` script."""
 
-    def __init__(self, device_dict):
-        ports = [8080, 8081, 8082, 8083]
+    def __init__(self, ports=None):
+        self.ports = ports
+        if not self.ports:
+            self.ports = [8080, 8081, 8082, 8083]
+
+    def setup(self, device_dict):
         self.servers: list[socket.socket] = []
         input("Press enter to start socket connections")
-        for port in ports:
+        for port in self.ports:
             print(f"waiting socket {port}")
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("localhost", port))
@@ -158,8 +179,8 @@ class SocketStream(dss.NotifyCallbackFeeddatas):
 
 
 # TODO make a argparse interface
-# callbacks_raw = [TQDMPbar]
+# callbacks_raw = [TQDMPbar()]
 # callbacks_feeddata = [FeedDataCSVWriter, SocketStream]
-callbacks_raw = [MetricsPrinter]
-callbacks_feeddata = [FeedDataCSVWriter]
+callbacks_raw = [MetricsPrinter()]
+callbacks_feeddata = [FeedDataCSVWriter()]
 asyncio.run(dss.dynamite_sampler_connect_notify(callbacks_raw, callbacks_feeddata))

@@ -7,24 +7,30 @@ import bleak
 
 
 class NotifyCallbackRawData:
+    """Abstract callback class for handling raw data from dynamite sampler on notify messages."""
 
-    def __init__(self, device_dict: dict):
+    def setup(self, device_dict: dict):
+        """Setup is called after being connected to a dynamite sampler.
+        device_dict contains meta data about the device."""
         pass
 
     def callback(self, rawdata: bytes):
-        raise NotImplementedError
+        pass
 
     def cleanup(self):
         pass
 
 
 class NotifyCallbackFeeddatas:
+    """Abstract callback class for handling parsed data from dynamite sampler on notify messages."""
 
-    def __init__(self, device_dict: dict):
+    def setup(self, device_dict: dict):
+        """Setup is called after being connected to a dynamite sampler.
+        device_dict contains meta data about the device."""
         pass
 
     def callback(self, feeddatas: list[ds.DynamiteSampler.ADCFeed.FeedData]):
-        raise NotImplementedError
+        pass
 
     def cleanup(self):
         pass
@@ -47,8 +53,8 @@ async def find_dynamite_samplers():
 
 # TODO rename main to something that describes that it streams the data to callbacks
 async def dynamite_sampler_connect_notify(
-    callbacks_raw_cls: Iterable[NotifyCallbackRawData],
-    callbacks_feeddatas_cls: Iterable[NotifyCallbackFeeddatas],
+    callbacks_raw: Iterable[NotifyCallbackRawData],
+    callbacks_feeddata: Iterable[NotifyCallbackFeeddatas],
 ):
     print("Looking for dynamite sampler devices")
     # TODO maybe switch to an the async with scan, and have device selection interactive
@@ -68,9 +74,6 @@ async def dynamite_sampler_connect_notify(
         i_dev = int(input("Select device #:"))
 
     device = devices_and_adv[i_dev][0]
-
-    callbacks_raw = []
-    callbacks_feeddata = []
 
     def disco(dev):
         for cbr in callbacks_raw:
@@ -107,8 +110,11 @@ async def dynamite_sampler_connect_notify(
         }
 
         # Setting up callbacks
-        callbacks_raw = [cls(dev_info) for cls in callbacks_raw_cls]
-        callbacks_feeddata = [cls(dev_info) for cls in callbacks_feeddatas_cls]
+        for cbr in callbacks_raw:
+            cbr.setup(dev_info)
+
+        for cbfd in callbacks_feeddata:
+            cbfd.setup(dev_info)
 
         feeddata_queue = asyncio.Queue()
 
