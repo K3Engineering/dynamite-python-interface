@@ -8,12 +8,11 @@ import csv
 import inspect
 import socket
 
-# aint this confusing
 import dynamite_sampler_api as ds
-import dynamite_sampler_streamer as dss
+import dynamite_sampler_bleak_util as dsbu
 
 
-class FeedDataCSVWriter(dss.NotifyCallbackFeeddatas):
+class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
     """This class writes FeedData to a CSV file"""
 
     def __init__(self):
@@ -47,7 +46,7 @@ class FeedDataCSVWriter(dss.NotifyCallbackFeeddatas):
         self.csv_file.close()
 
 
-class TQDMPbar(dss.NotifyCallbackRawData):
+class TQDMPbar(dsbu.NotifyCallbackRawData):
     """Use TQDM to show packet metrics"""
 
     def __init__(self):
@@ -75,7 +74,7 @@ class TQDMPbar(dss.NotifyCallbackRawData):
         self.pbar_packets.close()
 
 
-class MetricsPrinter(dss.NotifyCallbackRawData):
+class MetricsPrinter(dsbu.NotifyCallbackRawData):
     """Print metrics on the same line using \r"""
 
     def __init__(self, n_sample_avg: int = 15, print_dt: float = 0.1):
@@ -145,7 +144,7 @@ class MetricsPrinter(dss.NotifyCallbackRawData):
         print("cleaned up printer")
 
 
-class SocketStream(dss.NotifyCallbackFeeddatas):
+class SocketStream(dsbu.NotifyCallbackFeeddatas):
     """Stream each channel to a TCP localhost socket.
     Intended for to be used with waveforms & the `read_from_tcp_4_ports.js` script."""
 
@@ -183,4 +182,4 @@ class SocketStream(dss.NotifyCallbackFeeddatas):
 # callbacks_feeddata = [FeedDataCSVWriter, SocketStream]
 callbacks_raw = [MetricsPrinter()]
 callbacks_feeddata = [FeedDataCSVWriter()]
-asyncio.run(dss.dynamite_sampler_connect_notify(callbacks_raw, callbacks_feeddata))
+asyncio.run(dsbu.dynamite_sampler_connect_notify(callbacks_raw, callbacks_feeddata))
