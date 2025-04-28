@@ -71,7 +71,9 @@ async def dynamite_sampler_connect_notify(
         print("Only one device found, no need for user selection")
         i_dev = 0
     else:
-        i_dev = int(input("Select device #:"))
+        max_i = len(devices_and_adv)
+        while not 0 <= (i_dev := int(input("Select device #:"))) < max_i:
+            print(f"Invalid selection. Select from [0,{max_i})")
 
     device = devices_and_adv[i_dev][0]
 
