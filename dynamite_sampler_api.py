@@ -150,3 +150,34 @@ class DeviceInfo:
 
     class FirmwareRevision:
         UUID = 0x2A26
+
+
+## ADC converstion utility functions
+def adc_reading_to_voltage(
+    reading: int,
+    adc_ref: float = 1.2,
+    adc_gain: int = 4,
+    opamp_gain: int = 1,
+    adc_bits: int = 24,
+) -> float:
+    """Convert ADC reading to a voltage (in volts)"""
+    fsr_adc_in = adc_ref / adc_gain  # volts
+    lsb_adc_in = fsr_adc_in / 2 ** (adc_bits - 1)  # remember one is for sign
+    voltage_adc_in = reading * lsb_adc_in
+    voltage_op_amp_in = voltage_adc_in * opamp_gain
+
+    return voltage_op_amp_in
+
+
+def voltage_to_weight(
+    value: float,
+    loadcell_ratio: float = 2.0,
+    fullscale: float = 200,
+    voltage_in: float = 4,
+) -> float:
+    """Convert the mv reading from the ADC into a weight value on the loadcell.
+    value: voltage in volts
+    loadcell_ratio: mV/V value that is specified for loadcells
+    fullscale: Loadcell's rated fullscale output
+    """
+    return value * fullscale / (loadcell_ratio / 1000 * voltage_in)
