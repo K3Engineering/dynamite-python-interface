@@ -36,29 +36,25 @@ class NotifyCallbackFeeddatas:
         pass
 
 
-async def find_dynamite_samplers():
+async def find_dynamite_samplers() -> (
+    list[tuple[bleak.BLEDevice, bleak.AdvertisementData]]
+):
     """Return a list of devices & advertising that have a Dynamite sampler UUID.
     List is sorted by RSSI"""
-    devices_and_adv = await bleak.BleakScanner.discover(return_adv=True)
+    devices_and_adv = await bleak.BleakScanner.discover(
+        return_adv=True, service_uuids=[ds.DynamiteSampler.UUID]
+    )
 
-    samplers = []
-    for device, adv_data in sorted(
-        devices_and_adv.values(), key=lambda t: t[1].rssi, reverse=True
-    ):
-        if ds.DynamiteSampler.UUID in adv_data.service_uuids:
-            samplers.append((device, adv_data))
-
-    return samplers
+    return sorted(devices_and_adv.values(), key=lambda t: t[1].rssi, reverse=True)
 
 
-# TODO rename main to something that describes that it streams the data to callbacks
-async def dynamite_sampler_connect_notify(
-    callbacks_raw: Iterable[NotifyCallbackRawData],
-    callbacks_feeddata: Iterable[NotifyCallbackFeeddatas],
-):
-    print("Looking for dynamite sampler devices")
-    # TODO maybe switch to an the async with scan, and have device selection interactive
-    devices_and_adv = await find_dynamite_samplers()
+def interactive_select_device(
+    devices_and_adv: list[tuple[bleak.BLEDevice, bleak.AdvertisementData]],
+) -> bleak.BLEDevice:
+
+    if len(devices_and_adv) == 0:
+        print("No devices found!")
+        raise Exception("No Device found")
 
     fmt_str = "{:^3}| {:^5}| {:^20}| {:^30}"
     header = fmt_str.format("#", "RSSI", "Address", "Name")
@@ -75,7 +71,18 @@ async def dynamite_sampler_connect_notify(
         while not 0 <= (i_dev := int(input("Select device #:"))) < max_i:
             print(f"Invalid selection. Select from [0,{max_i})")
 
-    device = devices_and_adv[i_dev][0]
+    return devices_and_adv[i_dev][0]
+
+
+# TODO rename main to something that describes that it streams the data to callbacks
+async def dynamite_sampler_connect_notify(
+    callbacks_raw: Iterable[NotifyCallbackRawData],
+    callbacks_feeddata: Iterable[NotifyCallbackFeeddatas],
+):
+    print("Looking for dynamite sampler devices")
+    devices_and_adv = await find_dynamite_samplers()
+
+    device = interactive_select_device(devices_and_adv)
 
     def disco(dev):
         for cbr in callbacks_raw:
@@ -134,3 +141,5 @@ async def dynamite_sampler_connect_notify(
 
             for cbfd in callbacks_feeddata:
                 cbfd.callback(fds)
+
+    print("Device has disconnected.")
