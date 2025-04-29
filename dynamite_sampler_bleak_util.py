@@ -1,5 +1,5 @@
 import asyncio
-from typing import Iterable
+from typing import Iterable, Optional
 
 import dynamite_sampler_api as ds
 
@@ -50,11 +50,11 @@ async def find_dynamite_samplers() -> (
 
 def interactive_select_device(
     devices_and_adv: list[tuple[bleak.BLEDevice, bleak.AdvertisementData]],
-) -> bleak.BLEDevice:
+) -> Optional[bleak.BLEDevice]:
 
     if len(devices_and_adv) == 0:
         print("No devices found!")
-        raise Exception("No Device found")
+        return None
 
     fmt_str = "{:^3}| {:^5}| {:^20}| {:^30}"
     header = fmt_str.format("#", "RSSI", "Address", "Name")
@@ -83,6 +83,9 @@ async def dynamite_sampler_connect_notify(
     devices_and_adv = await find_dynamite_samplers()
 
     device = interactive_select_device(devices_and_adv)
+
+    if not device:
+        return
 
     def disco(dev):
         for cbr in callbacks_raw:
