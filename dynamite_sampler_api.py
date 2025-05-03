@@ -5,6 +5,7 @@ TODO: figure out how to abstract this file into separate repo.
 """
 
 import struct
+from typing import Self
 
 
 class DynamiteSampler:
@@ -35,7 +36,7 @@ class DynamiteSampler:
                 self.crc = crc
 
             @classmethod
-            def _unpack_single(cls, b: bytearray | bytes):
+            def _unpack_single(cls, b: bytearray | bytes) -> Self:
                 """Unpack a single Feed Data from bytes transmitted to its values."""
                 assert len(b) == cls.packed_bytes
 
@@ -52,7 +53,7 @@ class DynamiteSampler:
                 return cls(status, ch0, ch1, ch2, ch3, crc)
 
             @classmethod
-            def unpack_multiple(cls, b: bytearray | bytes):
+            def unpack_multiple(cls, b: bytearray | bytes) -> list[Self]:
                 """Unpack a notification packet which is a bunch of FeedData concatenated."""
                 assert len(b) % cls.packed_bytes == 0
 
@@ -108,7 +109,7 @@ class DynamiteSampler:
                 return str(self.__dict__)
 
             @classmethod
-            def unpack(cls, b: bytearray | bytes):
+            def unpack(cls, b: bytearray | bytes) -> Self:
                 """Unpack the BLE raw data"""
                 num_ch = b[0]
                 pow_mode = b[1]
