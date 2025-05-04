@@ -8,13 +8,31 @@ import struct
 from typing import Self
 
 
-class DynamiteSampler:
+# Meta classes are defined to make it easier to understand what's what, and for typing.
+# still WIP
+class BLEService:
+    UUID: int | str
+
+
+class BLECharacteristic:
+    UUID: int | str
+
+
+# TODO decide how to best handle this
+class BLECharacteristicRead:
+    UUID: int | str
+
+    @classmethod
+    def unpack(): ...
+
+
+class DynamiteSampler(BLEService):
     """Service that sends the ADC values (the force measurements).
-    This service UUID advertised."""
+    This service's UUID is advertised, and can be used to filter scanning."""
 
     UUID = "e331016b-6618-4f8f-8997-1a2c7c9e5fa3"
 
-    class ADCFeed:
+    class ADCFeed(BLECharacteristic):
         """Characteristic that streams the ADC values. Only has BLE Notifications."""
 
         UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
@@ -64,7 +82,7 @@ class DynamiteSampler:
 
                 return feed_datas
 
-    class LoadCellCalibration:
+    class LoadCellCalibration(BLECharacteristicRead):
         """Characteristic that contains the calibration data. Read only."""
 
         # TODO - sync this with the calibration flashing script
@@ -86,7 +104,7 @@ class DynamiteSampler:
 
             return struct.unpack(cls._format, b[0:format_len])
 
-    class ADCConfig:
+    class ADCConfig(BLECharacteristicRead):
         """Characteristic (Read-only) of the ADC configuration values"""
 
         UUID = "adcc0f19-2575-4502-9a48-0e99974eb34f"
@@ -120,7 +138,7 @@ class DynamiteSampler:
                 return cls(num_ch, pow_mode, rate, gains)
 
 
-class OTA:
+class OTA(BLEService):
     UUID = "d6f1d96d-594c-4c53-b1c6-144a1dfde6d8"
 
     class Control:
@@ -141,15 +159,15 @@ class OTA:
         UUID = "23408888-1f40-4cd8-9b89-ca8d45f8a5b0"
 
 
-class DeviceInfo:
+class DeviceInfo(BLEService):
     """Read-only device info"""
 
     UUID = 0x180A
 
-    class ManufacturerName:
+    class ManufacturerName(BLECharacteristicRead):
         UUID = 0x2A29
 
-    class FirmwareRevision:
+    class FirmwareRevision(BLECharacteristicRead):
         UUID = 0x2A26
 
 
