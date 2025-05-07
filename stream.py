@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Stream Dynamite sampler data to various locations"""
+import argparse
 import asyncio
 import datetime
 import collections
@@ -7,6 +8,9 @@ import time
 import csv
 import inspect
 import socket
+import json
+
+from typing import Optional
 
 import dynamite_sampler_api as ds
 import dynamite_sampler_bleak_util as dsbu
@@ -23,7 +27,7 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
 
         start_time = datetime.datetime.now()
         date = start_time.strftime("%Y%m%d_%H%M%S")
-        name = f"./data/datadump_{date}.txt"
+        name = f"./data/feeddata_{date}.csv"
         self.csv_file = open(name, "w", newline="")
 
         print("#", date, file=self.csv_file)
@@ -148,10 +152,11 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
     """Stream each channel to a TCP localhost socket.
     Intended for to be used with waveforms & the `read_from_tcp_4_ports.js` script."""
 
-    def __init__(self, ports=None):
+    def __init__(self, ports: Optional[list[int]] = None):
         self.ports = ports
         if not self.ports:
             self.ports = [8080, 8081, 8082, 8083]
+        assert len(set(self.ports)) == 4, "There needs to be 4 ports specified"
 
     def setup(self, device_dict):
         self.servers: list[socket.socket] = []
@@ -177,9 +182,63 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
             server.close()
 
 
-# TODO make a argparse interface
-# callbacks_raw = [TQDMPbar()]
-# callbacks_feeddata = [FeedDataCSVWriter, SocketStream]
-callbacks_raw = [MetricsPrinter()]
-callbacks_feeddata = [FeedDataCSVWriter()]
-asyncio.run(dsbu.dynamite_sampler_connect_notify(callbacks_raw, callbacks_feeddata))
+def gen_append_class_init(cls):
+    class AppendClassInit(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+
+            if getattr(namespace, self.dest) is None:
+                setattr(namespace, self.dest, [])
+
+            getattr(namespace, self.dest).append(cls(**json.loads(values)))
+
+    return AppendClassInit
+
+
+if __name__ == "__main__":
+
+    # WIP argparser. Haven't figured out the best syntax for this script.
+    # This is something that works
+    parser = argparse.ArgumentParser(description=__doc__)
+
+    # Raw data callbacks
+    parser.add_argument(
+        "--metrics",
+        nargs="?",
+        action=gen_append_class_init(MetricsPrinter),
+        dest="callbacks_rawdata",
+        const="{}",
+        default=[],
+    )
+    parser.add_argument(
+        "--tqdm",
+        nargs="?",
+        action=gen_append_class_init(TQDMPbar),
+        dest="callbacks_rawdata",
+        const="{}",
+        default=[],
+    )
+
+    # Feed data callbacks
+    parser.add_argument(
+        "--socket",
+        nargs="?",
+        action=gen_append_class_init(SocketStream),
+        dest="callbacks_feeddata",
+        const="{}",
+        default=[],
+    )
+    parser.add_argument(
+        "--csv",
+        nargs="?",
+        action=gen_append_class_init(FeedDataCSVWriter),
+        dest="callbacks_feeddata",
+        const="{}",
+        default=[],
+    )
+    args = parser.parse_args()
+
+    asyncio.run(
+        dsbu.dynamite_sampler_connect_notify(
+            args.callbacks_rawdata, args.callbacks_feeddata
+        )
+    )
