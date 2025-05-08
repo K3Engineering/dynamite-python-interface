@@ -17,6 +17,14 @@ for( var i = 0; i < 4; i++){
     if(!servers[i].isConnected() && !servers[i].waitForNewConnection(20.0)) throw "server wait timeout";
 }
 
+// The first TCP sends the scaling factor to use
+wait(0.1);
+var scaleFactor = [1,1,1,1];
+for( var i = 0; i < 4; i++) {
+    scaleFactor[i] = servers[i].readInt(1);
+    print("Scale factor", i, scaleFactor[i]);
+}
+
 
 //channelData = [];
 channelDatas = [[],[],[],[]];
@@ -29,7 +37,14 @@ while(1){
 
     for( var i = 0; i < 4; i++)
     {
+        
         var inputVals = servers[i].readInt(0);
+
+        // Scale each value
+        for( var inputI = 0; inputI < inputVals.length; inputI++) {
+            inputVals[inputI] /= scaleFactor[i];
+        }
+        //inputVals.map(element => element / scaleFactor);
     
         Array.prototype.push.apply(channelDatas[i], inputVals);
     

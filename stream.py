@@ -9,6 +9,7 @@ import csv
 import inspect
 import socket
 import json
+import struct
 
 from typing import Optional
 
@@ -27,6 +28,7 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
 
         start_time = datetime.datetime.now()
         date = start_time.strftime("%Y%m%d_%H%M%S")
+        # TODO switch to path lib and make parent
         name = f"./data/feeddata_{date}.csv"
         self.csv_file = open(name, "w", newline="")
 
@@ -136,9 +138,9 @@ class MetricsPrinter(dsbu.NotifyCallbackRawData):
                 f"Avg {len(self.q_dt)} samples, "
                 f"dt: {avg_dt*1000:5.1f}ms, "
                 f"{self.total_packets:10} packets, "
-                f"{avg_packets/avg_dt:6.1f} packet/dt, "
+                f"{avg_packets/avg_dt:6.1f} packet/sec, "
                 f"{avg_bytes:3} bytes/packet, "
-                f"{avg_bytes/avg_dt:5.1f} bytes/dt "
+                f"{avg_bytes/avg_dt:5.1f} bytes/sec "
             )
 
             print(metric_str, end="\r")
@@ -152,11 +154,13 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
     """Stream each channel to a TCP localhost socket.
     Intended for to be used with waveforms & the `read_from_tcp_4_ports.js` script."""
 
-    def __init__(self, ports: Optional[list[int]] = None):
+    def __init__(self, ports: Optional[list[int]] = None, conversion: str = "adc"):
         self.ports = ports
         if not self.ports:
             self.ports = [8080, 8081, 8082, 8083]
         assert len(set(self.ports)) == 4, "There needs to be 4 ports specified"
+
+        self.conversion_str = conversion
 
     def setup(self, device_dict):
         self.servers: list[socket.socket] = []
@@ -167,6 +171,34 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
             s.connect(("localhost", port))
             self.servers.append(s)
             print(f"socket connected {port}")
+
+        # TODO make this a bit less hacky, more versatile
+        if device_dict["ADCConfig"]:
+            adc_gains = device_dict["ADCConfig"].gains
+        else:
+            adc_gains = [1, 4, 4, 1]
+        print("Sending gains:", adc_gains)
+
+        for server, gain in zip(self.servers, adc_gains):
+            conversion_funcs = {
+                "adc": lambda x: x,
+                "volts_adc_ir": lambda x: ds.adc_reading_to_voltage(x, adc_gain=gain),
+                "volts_opamp_ir": lambda x: ds.adc_reading_to_voltage(
+                    x, adc_gain=gain, opamp_gain=26
+                ),
+                "kg_with_opamp": lambda x: ds.voltage_to_weight(
+                    ds.adc_reading_to_voltage(x, adc_gain=gain, opamp_gain=26)
+                ),
+            }
+
+            self.converstion_func = conversion_funcs[self.conversion_str]
+
+            # Send the scaling factor by which to divide the values to get the selected units.
+            scale_factor = int(1 / self.converstion_func(1))
+            print(
+                "Sending scale factor:", scale_factor, "to socket", server.getsockname()
+            )
+            server.send(scale_factor.to_bytes(4, "little", signed=True))
 
     def callback(self, feeddatas):
         for data in feeddatas:
