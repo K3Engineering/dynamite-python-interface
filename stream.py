@@ -16,6 +16,8 @@ from typing import Optional
 import dynamite_sampler_api as ds
 import dynamite_sampler_bleak_util as dsbu
 
+# TODO add pretty class prints
+
 
 class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
     """This class writes FeedData to a CSV file"""
@@ -231,46 +233,41 @@ if __name__ == "__main__":
     # WIP argparser. Haven't figured out the best syntax for this script.
     # This is something that works
     parser = argparse.ArgumentParser(description=__doc__)
+    # TODO add help about the json input
 
-    # Raw data callbacks
-    parser.add_argument(
-        "--metrics",
-        nargs="?",
-        action=gen_append_class_init(MetricsPrinter),
-        dest="callbacks_rawdata",
-        const="{}",
-        default=[],
-    )
-    parser.add_argument(
-        "--tqdm",
-        nargs="?",
-        action=gen_append_class_init(TQDMPbar),
-        dest="callbacks_rawdata",
-        const="{}",
-        default=[],
-    )
+    arg_classes = [
+        ("--metrics", MetricsPrinter, "callbacks_rawdata"),
+        ("--tqdm", TQDMPbar, "callbacks_rawdata"),
+        ("--socket", SocketStream, "callbacks_feeddata"),
+        ("--csv", FeedDataCSVWriter, "callbacks_feeddata"),
+    ]
 
-    # Feed data callbacks
-    parser.add_argument(
-        "--socket",
-        nargs="?",
-        action=gen_append_class_init(SocketStream),
-        dest="callbacks_feeddata",
-        const="{}",
-        default=[],
-    )
-    parser.add_argument(
-        "--csv",
-        nargs="?",
-        action=gen_append_class_init(FeedDataCSVWriter),
-        dest="callbacks_feeddata",
-        const="{}",
-        default=[],
-    )
+    for flag, cls, dest in arg_classes:
+        # TODO add help to the arguments
+        # each argument will append a class instance to the dest.
+        # optionaly each flag can take in a string json that will be parsed and passed
+        # into the initializer as keyword args.
+        parser.add_argument(
+            flag,
+            action=gen_append_class_init(cls),
+            dest=dest,
+            nargs="?",  # 0 or 1 arguments
+            const="{}",  # if 0 arguments pass in empty dict
+            default=[],  # if no arguments in dest, make it an empty list
+        )
+
     args = parser.parse_args()
 
+    if args.callbacks_rawdata == [] and args.callbacks_feeddata == []:
+        print("No callbacks selected; adding the following:")
+        callbacks_rawdata = [MetricsPrinter()]
+        callbacks_feeddata = [FeedDataCSVWriter(), SocketStream()]
+        print(callbacks_rawdata)
+        print(callbacks_feeddata)
+    else:
+        callbacks_rawdata = args.callbacks_rawdata
+        callbacks_feeddata = args.callbacks_feeddata
+
     asyncio.run(
-        dsbu.dynamite_sampler_connect_notify(
-            args.callbacks_rawdata, args.callbacks_feeddata
-        )
+        dsbu.dynamite_sampler_connect_notify(callbacks_rawdata, callbacks_feeddata)
     )
