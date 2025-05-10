@@ -156,7 +156,9 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
     """Stream each channel to a TCP localhost socket.
     Intended for to be used with waveforms & the `read_from_tcp_4_ports.js` script."""
 
-    def __init__(self, ports: Optional[list[int]] = None, conversion: str = "adc"):
+    def __init__(
+        self, ports: Optional[list[int]] = None, conversion: str = "volts_adc_ir"
+    ):
         self.ports = ports
         if not self.ports:
             self.ports = [8080, 8081, 8082, 8083]
