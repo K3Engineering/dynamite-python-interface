@@ -183,7 +183,7 @@ def adc_reading_to_voltage(
     fsr_adc_in = adc_ref / adc_gain  # volts
     lsb_adc_in = fsr_adc_in / 2 ** (adc_bits - 1)  # remember one is for sign
     voltage_adc_in = reading * lsb_adc_in
-    voltage_op_amp_in = voltage_adc_in * opamp_gain
+    voltage_op_amp_in = voltage_adc_in / opamp_gain
 
     return voltage_op_amp_in
 
