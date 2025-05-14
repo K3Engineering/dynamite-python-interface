@@ -37,14 +37,12 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
         print("#", date, file=self.csv_file)
         print("#", device_dict, file=self.csv_file)
 
-        fieldnames = inspect.getfullargspec(
-            ds.DynamiteSampler.ADCFeed.FeedData.__init__
-        ).args[1:]
+        fieldnames = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
 
         self.writer = csv.DictWriter(self.csv_file, fieldnames)
         self.writer.writeheader()
 
-    def callback(self, feeddatas: list[ds.DynamiteSampler.ADCFeed.FeedData]):
+    def callback(self, feeddatas: list[ds.FeedData]):
         # print("callback in csv writer")
         for data in feeddatas:
             self.writer.writerow(data.__dict__)

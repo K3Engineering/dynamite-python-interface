@@ -1,4 +1,5 @@
 import asyncio
+from ssl import SSL_ERROR_WANT_X509_LOOKUP
 from typing import Iterable, Optional, TypeVar, Optional, Callable, Awaitable
 import functools
 
@@ -30,7 +31,7 @@ class NotifyCallbackFeeddatas:
         device_dict contains meta data about the device."""
         pass
 
-    def callback(self, feeddatas: list[ds.DynamiteSampler.ADCFeed.FeedData]):
+    def callback(self, feeddatas: list[ds.FeedData]):
         pass
 
     def cleanup(self):
@@ -75,56 +76,16 @@ def interactive_select_device(
     return devices_and_adv[i_dev][0]
 
 
-## All of this getter stuff smells funky. Should be nicer, but it gets the job done for now.
-# It smells cause I have to make a getter for every unpack function. Maybe have a
-# get characteristic function that handles this better? Would be nice to have the
-# characterisitcs typed with a protocol class, and I just pass in the class that I want.
-# The class would have the UUID and the unpack function.
-T = TypeVar("T")
+async def read_characteristic(
+    client: bleak.BleakClient, cls: type[ds.BLECharacteristicRead[ds._UnpackResultT]]
+) -> Optional[ds._UnpackResultT]:
+    """Read characteristic, and unpacks the values. Returns None if it doesn't exist"""
+    try:
+        b = await client.read_gatt_char(cls.UUID)
+    except bleak.exc.BleakCharacteristicNotFoundError:
+        return None
 
-
-def catch_characteristic_exc(
-    func: Callable[..., Awaitable[T]],
-) -> Callable[..., Awaitable[Optional[T]]]:
-    """Util for reading characteristics. Return None instead of raising exception if
-    they don't exist. The Type hints just that that it changes the wrapped function
-    return into optional return of the same type.
-    """
-
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs) -> Optional[T]:
-        try:
-            return await func(*args, **kwargs)
-        except bleak.exc.BleakCharacteristicNotFoundError:
-            return None
-
-    return wrapper
-
-
-@catch_characteristic_exc
-async def get_firmware_revision(client: bleak.BleakClient) -> str:
-    fw_uuid = bleak.uuids.normalize_uuid_16(ds.DeviceInfo.FirmwareRevision.UUID)
-    return str(await client.read_gatt_char(fw_uuid), "utf-8")
-
-
-@catch_characteristic_exc
-async def get_manufacture(client: bleak.BleakClient) -> str:
-    manu_uuid = bleak.uuids.normalize_uuid_16(ds.DeviceInfo.ManufacturerName.UUID)
-    return str(await client.read_gatt_char(manu_uuid), "utf-8")
-
-
-@catch_characteristic_exc
-async def get_loadcell_calibration(client: bleak.BleakClient):
-    return ds.DynamiteSampler.LoadCellCalibration.unpack(
-        await client.read_gatt_char(ds.DynamiteSampler.LoadCellCalibration.UUID)
-    )
-
-
-@catch_characteristic_exc
-async def get_adc_info(client: bleak.BleakClient):
-    return ds.DynamiteSampler.ADCConfig.ConfigData.unpack(
-        await client.read_gatt_char(ds.DynamiteSampler.ADCConfig.UUID)
-    )
+    return cls.unpack(b)
 
 
 # TODO rename main to something that describes that it streams the data to callbacks
@@ -154,10 +115,18 @@ async def dynamite_sampler_connect_notify(
         print("Connected!")
 
         dev_info = {
-            "FirmwareRevision": await get_firmware_revision(client),
-            "ManufacturerName": await get_manufacture(client),
-            "LoadcellCalibration": await get_loadcell_calibration(client),
-            "ADCConfig": await get_adc_info(client),
+            "FirmwareRevision": await read_characteristic(
+                client, ds.DeviceInfo.FirmwareRevision
+            ),
+            "ManufacturerName": await read_characteristic(
+                client, ds.DeviceInfo.ManufacturerName
+            ),
+            "LoadcellCalibration": await read_characteristic(
+                client, ds.DynamiteSampler.LoadCellCalibration
+            ),
+            "ADCConfig": await read_characteristic(
+                client, ds.DynamiteSampler.ADCConfig
+            ),
         }
 
         # Setting up callbacks
@@ -176,7 +145,7 @@ async def dynamite_sampler_connect_notify(
         print("notify started")
         while True:
             raw_data = await feeddata_queue.get()
-            fds = ds.DynamiteSampler.ADCFeed.FeedData.unpack_multiple(raw_data)
+            fds = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
 
             for cbr in callbacks_raw:
                 cbr.callback(raw_data)
