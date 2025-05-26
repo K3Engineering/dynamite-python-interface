@@ -9,7 +9,7 @@ import csv
 import inspect
 import socket
 import json
-import struct
+import pathlib
 
 from typing import Optional
 
@@ -22,19 +22,27 @@ import dynamite_sampler_bleak_util as dsbu
 class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
     """This class writes FeedData to a CSV file"""
 
-    def __init__(self):
-        pass  # TODO
+    def __init__(self, file_path_str: Optional[str] = None):
+
+        if not file_path_str:
+            # Use a default file path
+            date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_path_str = f"./data/feeddata_{date_str}.csv"
+
+        # resolve the path so .parent works properly
+        self.file_path = pathlib.Path(file_path_str).resolve()
+
+        # Make sure that the directory for the file exists, if it doesn't make it
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # https://docs.python.org/3/library/csv.html#id4
+        # for csvwriter, the newline="" has to be used for proper line ending quotes
+        # Unclear if this is actually needed in this use case
+        self.csv_file = open(self.file_path, "w", newline="")
 
     def setup(self, device_dict):
-        # print("init csv writer", device_dict)
 
-        start_time = datetime.datetime.now()
-        date = start_time.strftime("%Y%m%d_%H%M%S")
-        # TODO switch to path lib and make parent
-        name = f"./data/feeddata_{date}.csv"
-        self.csv_file = open(name, "w", newline="")
-
-        print("#", date, file=self.csv_file)
+        print("#", "CSV setup:", datetime.datetime.now(), file=self.csv_file)
         print("#", device_dict, file=self.csv_file)
 
         fieldnames = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
