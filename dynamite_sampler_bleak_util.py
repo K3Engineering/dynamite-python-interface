@@ -129,6 +129,11 @@ async def dynamite_sampler_connect_notify(
             ),
         }
 
+        # TODO figure out how to best print this?
+        print("Device information:")
+        for key, value in dev_info.items():
+            print("\t", key, ":", value)
+
         # Setting up callbacks
         for cbr in callbacks_raw:
             cbr.setup(dev_info)
