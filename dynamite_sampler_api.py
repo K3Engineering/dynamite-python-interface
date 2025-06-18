@@ -9,13 +9,16 @@ from typing import Generic, TypeVar, ClassVar
 import dataclasses
 
 
+import ADS131M04Register
+
+
 ## Data classes that hold the parsed information from the characteristics
 # Moved outside of the service characteristic classes to make it less nested.
 # Unclear if thats the best way, TODO: decide where to put these. TODO: is dataclass a good idea?
 @dataclasses.dataclass
 class ADCConfigData:
     num_channels: int
-    power_mode: int
+    power_mode: str
     sample_rate: int
     gains: list[int]
 
@@ -129,11 +132,34 @@ class DynamiteSampler(BLEService):
         @staticmethod
         def unpack(b: bytearray | bytes) -> ADCConfigData:
             """Unpack the BLE raw data"""
-            num_ch = b[0]
-            pow_mode = b[1]
-            rate = 32000 // 2 ** b[2]
+            version = b[0]
+            assert version == 1, "Can't parse this version"
 
-            gains = [2 ** b[i] for i in range(3, 3 + num_ch)]
+            num_ch = b[1]
+
+            reg_id = ADS131M04Register.ID.from_buffer(b[2:4])
+            reg_status = ADS131M04Register.Status.from_buffer(b[4:6])
+            reg_mode = ADS131M04Register.Mode.from_buffer(b[6:8])
+            reg_clock = ADS131M04Register.Clock.from_buffer(b[8:10])
+            reg_gain = ADS131M04Register.Gain.from_buffer(b[10:12])
+
+            # TODO: not all of the registers are exposed, so for now print all of them
+            # for debug purposes.
+            print(reg_id)
+            print(reg_status)
+            print(reg_mode)
+            print(reg_clock)
+            print(reg_gain)
+
+            pow_mode_dict = {0: "VERY_LOW_POWER", 1: "LOW_POWER", 2: "HIGH_RESOLUTION"}
+            pow_mode = pow_mode_dict[reg_clock.PWR]
+            rate = 32000 // 2**reg_clock.OSR
+            gains = [
+                2**reg_gain.PGAGAIN0,
+                2**reg_gain.PGAGAIN1,
+                2**reg_gain.PGAGAIN2,
+                2**reg_gain.PGAGAIN3,
+            ]
 
             return ADCConfigData(num_ch, pow_mode, rate, gains)
 
