@@ -1,7 +1,5 @@
 import asyncio
-from ssl import SSL_ERROR_WANT_X509_LOOKUP
-from typing import Iterable, Optional, TypeVar, Optional, Callable, Awaitable
-import functools
+from typing import Iterable, Optional, Optional
 
 import dynamite_sampler_api as ds
 
@@ -88,10 +86,20 @@ async def read_characteristic(
     return cls.unpack(b)
 
 
+async def write_characteristic(
+    client: bleak.BleakClient,
+    cls: type[ds.BLECharacteristicWrite[ds._PackType]],
+    data: ds._PackType,
+    response: bool = None,
+):
+    await client.write_gatt_char(cls.UUID, cls.pack(data), response=response)
+
+
 # TODO rename main to something that describes that it streams the data to callbacks
 async def dynamite_sampler_connect_notify(
     callbacks_raw: Iterable[NotifyCallbackRawData],
     callbacks_feeddata: Iterable[NotifyCallbackFeeddatas],
+    tx_power: Optional[int] = None,
 ):
     print("Looking for dynamite sampler devices")
     devices_and_adv = await find_dynamite_samplers()
@@ -114,32 +122,33 @@ async def dynamite_sampler_connect_notify(
     async with bleak.BleakClient(device, disconnected_callback=disco) as client:
         print("Connected!")
 
-        dev_info = {
-            "FirmwareRevision": await read_characteristic(
-                client, ds.DeviceInfo.FirmwareRevision
-            ),
-            "ManufacturerName": await read_characteristic(
-                client, ds.DeviceInfo.ManufacturerName
-            ),
-            "LoadcellCalibration": await read_characteristic(
-                client, ds.DynamiteSampler.LoadCellCalibration
-            ),
-            "ADCConfig": await read_characteristic(
-                client, ds.DynamiteSampler.ADCConfig
-            ),
+        # TODO this is temporary, have the power setting be passed it, or have a callback
+        if tx_power is not None:
+            print(f"Setting TX power to {tx_power} dBm")
+            await write_characteristic(client, ds.TxPower.TxPowerSet, tx_power)
+
+        dev_info_cls = (
+            ds.DeviceInfo.FirmwareRevision,
+            ds.DeviceInfo.ManufacturerName,
+            ds.DeviceInfo.TxPowerLevel,
+            ds.DynamiteSampler.LoadCellCalibration,
+            ds.DynamiteSampler.ADCConfig,
+        )
+        dev_info_dict = {
+            cls.__name__: await read_characteristic(client, cls) for cls in dev_info_cls
         }
 
         # TODO figure out how to best print this?
         print("Device information:")
-        for key, value in dev_info.items():
+        for key, value in dev_info_dict.items():
             print("\t", key, ":", value)
 
         # Setting up callbacks
         for cbr in callbacks_raw:
-            cbr.setup(dev_info)
+            cbr.setup(dev_info_dict)
 
         for cbfd in callbacks_feeddata:
-            cbfd.setup(dev_info)
+            cbfd.setup(dev_info_dict)
 
         feeddata_queue = asyncio.Queue()
 

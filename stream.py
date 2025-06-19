@@ -264,6 +264,10 @@ if __name__ == "__main__":
             default=[],  # if no arguments in dest, make it an empty list
         )
 
+    parser.add_argument(
+        "--txpwr", default=None, type=int, help="Set the tx power of the board"
+    )
+
     args = parser.parse_args()
 
     if args.callbacks_rawdata == [] and args.callbacks_feeddata == []:
@@ -277,5 +281,7 @@ if __name__ == "__main__":
         callbacks_feeddata = args.callbacks_feeddata
 
     asyncio.run(
-        dsbu.dynamite_sampler_connect_notify(callbacks_rawdata, callbacks_feeddata)
+        dsbu.dynamite_sampler_connect_notify(
+            callbacks_rawdata, callbacks_feeddata, tx_power=args.txpwr
+        )
     )
