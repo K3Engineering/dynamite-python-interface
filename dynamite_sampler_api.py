@@ -6,6 +6,7 @@ TODO: figure out how to abstract this file into separate repo.
 
 import struct
 from typing import Generic, TypeVar, ClassVar
+from collections.abc import Buffer
 import dataclasses
 
 
@@ -46,6 +47,7 @@ class BLECharacteristic:
 
 
 _UnpackResultT = TypeVar("_UnpackResultT")
+_PackType = TypeVar("_PackType")
 
 
 class BLECharacteristicRead(BLECharacteristic, Generic[_UnpackResultT]):
@@ -55,6 +57,15 @@ class BLECharacteristicRead(BLECharacteristic, Generic[_UnpackResultT]):
     def unpack(b: bytearray | bytes) -> _UnpackResultT:
         """Parses raw characteristic data into some sort of object."""
         raise NotImplementedError("Subclasses must implement the unpack method.")
+
+
+class BLECharacteristicWrite(BLECharacteristic, Generic[_PackType]):
+    """Base class for BLE characteristics that can be writen."""
+
+    @classmethod
+    def pack(data: _PackType) -> Buffer:
+        """Pack data into bytes to send."""
+        raise NotImplementedError("Subclasses must implement the pack method.")
 
 
 class DynamiteSampler(BLEService):
@@ -185,6 +196,18 @@ class OTA(BLEService):
         UUID = "23408888-1f40-4cd8-9b89-ca8d45f8a5b0"
 
 
+class TxPower(BLEService):
+    UUID = "74788a4c-72aa-4180-a478-59e969b959c9"
+
+    class TxPowerSet(BLECharacteristicWrite[int]):
+        UUID = "7478c418-35d3-4c3d-99d9-2de090159664"
+
+        @staticmethod
+        def pack(power: int) -> bytes:
+            """TX Power as a signed int8 in dBm"""
+            return power.to_bytes(signed=True, length=1)
+
+
 class DeviceInfo(BLEService):
     """Read-only device info. The UUIDs are 16 bit hex."""
 
@@ -203,6 +226,14 @@ class DeviceInfo(BLEService):
         @staticmethod
         def unpack(b: bytearray | bytes) -> str:
             return str(b, "utf-8")
+
+    class TxPowerLevel(BLECharacteristicRead[int]):
+        UUID = "2A07"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> int:
+            assert len(b) == 1, "TX power expected to be single int8 byte"
+            return int.from_bytes(b, signed=True)
 
 
 ## ADC converstion utility functions
