@@ -6,7 +6,6 @@ TODO: figure out how to abstract this file into separate repo.
 
 import struct
 from typing import Generic, TypeVar, ClassVar
-from collections.abc import Buffer
 import dataclasses
 
 
@@ -38,6 +37,7 @@ class FeedData:
 
 
 ## BLE services and characteristics sturcture
+# Baseclasses and typing boiler plate stuff to make the acutal API a bit more readable.
 class BLEService:
     UUID: str
 
@@ -63,9 +63,14 @@ class BLECharacteristicWrite(BLECharacteristic, Generic[_PackType]):
     """Base class for BLE characteristics that can be writen."""
 
     @classmethod
-    def pack(data: _PackType) -> Buffer:
+    def pack(data: _PackType) -> bytes | bytearray:
         """Pack data into bytes to send."""
+        # The return type ideally would be collections.abc.Buffer, but that is new to 3.12.
+        # bytes | bytearray should be good enough for now.
         raise NotImplementedError("Subclasses must implement the pack method.")
+
+
+## Dynamite Sampler API classes
 
 
 class DynamiteSampler(BLEService):
@@ -176,6 +181,7 @@ class DynamiteSampler(BLEService):
 
 
 class OTA(BLEService):
+    # TODO - implement this and convert the OTA script to use this API
     UUID = "d6f1d96d-594c-4c53-b1c6-144a1dfde6d8"
 
     class Control:
