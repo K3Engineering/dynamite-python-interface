@@ -22,7 +22,7 @@ wait(0.1);
 var scaleFactor = [1,1,1,1];
 for( var i = 0; i < 4; i++) {
     scaleFactor[i] = servers[i].readInt(1);
-    print("Scale factor", i, scaleFactor[i], typeof(scaleFactor[i]));
+    print("Scale factor", i, scaleFactor[i]);
 }
 
 
