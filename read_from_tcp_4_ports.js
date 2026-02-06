@@ -12,7 +12,7 @@ var servers = [Tcp(),Tcp(),Tcp(),Tcp()];
 // Connect to all ports
 for( var i = 0; i < 4; i++){
     print("server num", i, ports[i]);
-    if(!servers[i].listen("localhost", ports[i])) throw "server error";
+    if(!servers[i].listen("127.0.0.1", ports[i])) throw "server error";
     print("Waiting for connection, connect on the python side");
     if(!servers[i].isConnected() && !servers[i].waitForNewConnection(20.0)) throw "server wait timeout";
 }
@@ -22,7 +22,7 @@ wait(0.1);
 var scaleFactor = [1,1,1,1];
 for( var i = 0; i < 4; i++) {
     scaleFactor[i] = servers[i].readInt(1);
-    print("Scale factor", i, scaleFactor[i]);
+    print("Scale factor", i, scaleFactor[i], typeof(scaleFactor[i]));
 }
 
 
@@ -38,14 +38,13 @@ while(1){
     {
         // Read all data on the socket
         var inputVals = servers[i].readInt(0);
+        
 
-        // Scale each value
+        // Scale each value and extend channel data
         for( var inputI = 0; inputI < inputVals.length; inputI++) {
-            inputVals[inputI] /= scaleFactor[i];
+            var val = inputVals[inputI] / scaleFactor[i];
+            channelDatas[i].push(val);
         }
-    
-        // Extend the data
-        Array.prototype.push.apply(channelDatas[i], inputVals);
     
         // Trim - keep only the latest data, and remove old data
         while(channelDatas[i].length > maxLenData){
