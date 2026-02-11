@@ -110,13 +110,21 @@ async def dynamite_sampler_connect_notify(
         return
 
     def disco(dev):
+        print("Disconnecting from device:", dev)
+        print("Starting callback clean-up")
         for cbr in callbacks_raw:
-            cbr.cleanup()
+            try:
+                cbr.cleanup()
+            except Exception as e:
+                print(f"  cleanup error for {cbr}: {e}")
 
         for cbfd in callbacks_feeddata:
-            cbfd.cleanup()
+            try:
+                cbfd.cleanup()
+            except Exception as e:
+                print(f"  cleanup error for {cbfd}: {e}")
 
-        print("disconnection callback finished for:", dev)
+        print("Finished callback clean-up")
 
     print("Connecting to:", device)
     async with bleak.BleakClient(device, disconnected_callback=disco) as client:
