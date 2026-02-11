@@ -6,7 +6,7 @@
 print("start");
 if(!('Scope' in this)) throw "Please open a Scope instrument";
 
-var ports = [8080, 8081, 8082, 8083];
+var ports = [8090, 8091, 8092, 8093];
 var servers = [Tcp(),Tcp(),Tcp(),Tcp()];
 
 // Connect to all ports
