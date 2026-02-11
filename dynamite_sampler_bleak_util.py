@@ -29,7 +29,7 @@ class NotifyCallbackFeeddatas:
         device_dict contains meta data about the device."""
         pass
 
-    def callback(self, feeddatas: list[ds.FeedData]):
+    def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData]):
         pass
 
     def cleanup(self):
@@ -172,12 +172,12 @@ async def dynamite_sampler_connect_notify(
         print("notify started")
         while True:
             raw_data = await feeddata_queue.get()
-            fds = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
+            feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
 
             for cbr in callbacks_raw:
                 cbr.callback(raw_data)
 
             for cbfd in callbacks_feeddata:
-                cbfd.callback(fds)
+                cbfd.callback(feed_packet.header, feed_packet.samples)
 
     print("Device has disconnected.")

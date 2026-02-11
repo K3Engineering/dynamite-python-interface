@@ -23,7 +23,6 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
     """This class writes FeedData to a CSV file"""
 
     def __init__(self, file_path_str: Optional[str] = None):
-
         if not file_path_str:
             # Use a default file path
             date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -41,7 +40,6 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
         self.csv_file = open(self.file_path, "w", newline="")
 
     def setup(self, device_dict):
-
         print("#", "CSV setup:", datetime.datetime.now(), file=self.csv_file)
         print("#", device_dict, file=self.csv_file)
 
@@ -50,7 +48,7 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
         self.writer = csv.DictWriter(self.csv_file, fieldnames)
         self.writer.writeheader()
 
-    def callback(self, feeddatas: list[ds.FeedData]):
+    def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData]):
         # print("callback in csv writer")
         for data in feeddatas:
             self.writer.writerow(data.__dict__)
@@ -71,7 +69,6 @@ class TQDMPbar(dsbu.NotifyCallbackRawData):
         self.tqdm = tqdm
 
     def setup(self, device_dict):
-
         self.pbar_packets = self.tqdm(
             desc="Total packets", unit="packets", position=0, smoothing=1
         )
@@ -144,11 +141,11 @@ class MetricsPrinter(dsbu.NotifyCallbackRawData):
             metric_str = (
                 f"[{elapsed_time}] "
                 f"Avg {len(self.q_dt)} samples, "
-                f"dt: {avg_dt*1000:5.1f}ms, "
+                f"dt: {avg_dt * 1000:5.1f}ms, "
                 f"{self.total_packets:10} packets, "
-                f"{avg_packets/avg_dt:6.1f} packet/sec, "
+                f"{avg_packets / avg_dt:6.1f} packet/sec, "
                 f"{avg_bytes:3} bytes/packet, "
-                f"{avg_bytes/avg_dt:5.1f} bytes/sec "
+                f"{avg_bytes / avg_dt:5.1f} bytes/sec "
             )
 
             print(metric_str, end="\r")
@@ -210,7 +207,7 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
             )
             server.send(scale_factor.to_bytes(4, "little", signed=True))
 
-    def callback(self, feeddatas):
+    def callback(self, header, feeddatas):
         for data in feeddatas:
             for server, ch_val in zip(
                 self.servers, (data.ch0, data.ch1, data.ch2, data.ch3)
@@ -227,7 +224,6 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
 def gen_append_class_init(cls):
     class AppendClassInit(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
-
             if getattr(namespace, self.dest) is None:
                 setattr(namespace, self.dest, [])
 
@@ -237,7 +233,6 @@ def gen_append_class_init(cls):
 
 
 if __name__ == "__main__":
-
     # WIP argparser. Haven't figured out the best syntax for this script.
     # This is something that works
     parser = argparse.ArgumentParser(description=__doc__)
