@@ -171,9 +171,9 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
         assert len(set(self.ports)) == 4, "There needs to be 4 ports specified"
 
         self.conversion_str = conversion
+        self.servers: list[socket.socket] = []
 
     def setup(self, device_dict):
-        self.servers: list[socket.socket] = []
         input("Press enter to start socket connections")
         for port in self.ports:
             print(f"waiting socket {port}")
