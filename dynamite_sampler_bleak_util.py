@@ -81,9 +81,14 @@ async def read_characteristic(
     try:
         b = await client.read_gatt_char(cls.UUID)
     except bleak.exc.BleakCharacteristicNotFoundError:
+        print("BleakCharacteristicNotFoundError:", cls)
         return None
 
-    return cls.unpack(b)
+    try:
+        return cls.unpack(b)
+    except Exception as e:
+        print("Unpack error in:", cls)
+        raise e
 
 
 async def write_characteristic(
