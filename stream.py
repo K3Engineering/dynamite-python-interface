@@ -167,7 +167,7 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
     ):
         self.ports = ports
         if not self.ports:
-            self.ports = [8080, 8081, 8082, 8083]
+            self.ports = [8090, 8091, 8092, 8093]
         assert len(set(self.ports)) == 4, "There needs to be 4 ports specified"
 
         self.conversion_str = conversion
