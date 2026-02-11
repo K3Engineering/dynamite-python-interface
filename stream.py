@@ -43,7 +43,9 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
         print("#", "CSV setup:", datetime.datetime.now(), file=self.csv_file)
         print("#", device_dict, file=self.csv_file)
 
-        fieldnames = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
+        fieldnames_feedheader = inspect.getfullargspec(ds.FeedHeader.__init__).args[1:]
+        fieldnames_feeddata = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
+        fieldnames = fieldnames_feedheader + fieldnames_feeddata
 
         self.writer = csv.DictWriter(self.csv_file, fieldnames)
         self.writer.writeheader()
@@ -51,7 +53,7 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
     def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData]):
         # print("callback in csv writer")
         for data in feeddatas:
-            self.writer.writerow(data.__dict__)
+            self.writer.writerow(collections.ChainMap(header.__dict__, data.__dict__))
 
     def cleanup(self):
         print("Closing csv file")
