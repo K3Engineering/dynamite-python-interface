@@ -24,16 +24,30 @@ class ADCConfigData:
 
 
 @dataclasses.dataclass
-class FeedData:
-    """This is a reading sample that is transmitted. Each BLE notification is a
-    concatination of multiple FeedDatas."""
+class FeedHeader:
+    """Packet header prepended to each BLE ADC feed notification."""
 
-    status: int
+    sz: int  # Number of payload bytes (uint8)
+    order: int  # Running sample counter (uint16, little-endian)
+
+
+@dataclasses.dataclass
+class FeedData:
+    """A single ADC sample. Each BLE notification contains a header followed
+    by a concatenation of multiple FeedData samples."""
+
     ch0: int
     ch1: int
     ch2: int
     ch3: int
-    crc: int
+
+
+@dataclasses.dataclass
+class FeedPacket:
+    """A full BLE ADC feed notification: header + list of samples."""
+
+    header: FeedHeader
+    samples: list[FeedData]
 
 
 ## BLE services and characteristics sturcture
@@ -79,45 +93,62 @@ class DynamiteSampler(BLEService):
 
     UUID = "e331016b-6618-4f8f-8997-1a2c7c9e5fa3"
 
-    class ADCFeed(BLECharacteristicRead[FeedData]):
-        """Characteristic that streams the ADC values. Only has BLE Notifications."""
+    class ADCFeed(BLECharacteristicRead[FeedPacket]):
+        """Characteristic that streams the ADC values. Only has BLE Notifications.
+
+        Each notification is a packet with a 3-byte header followed by
+        concatenated 12-byte ADC samples (4 channels x 3 bytes each)."""
 
         UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-        _packed_bytes: ClassVar[int] = 15  # FeedData is packed into 15 bytes.
+        _header_bytes: ClassVar[int] = 3  # sz (1B) + order (2B)
+        _sample_bytes: ClassVar[int] = 12  # 4 channels x 3 bytes each
+
+        @staticmethod
+        def _unpack_header(b: bytearray | bytes) -> FeedHeader:
+            """Unpack the 3-byte packet header."""
+            sz = b[0]
+            order = int.from_bytes(b[1:3], byteorder="little", signed=False)
+            return FeedHeader(sz, order)
 
         @staticmethod
         def _unpack_single(b: bytearray | bytes) -> FeedData:
-            """Unpack a single Feed Data from bytes transmitted to its values."""
-            assert len(b) == DynamiteSampler.ADCFeed._packed_bytes
+            """Unpack a single ADC sample (4 channels, 3 bytes each, big-endian)."""
+            assert len(b) == DynamiteSampler.ADCFeed._sample_bytes
 
-            status = int.from_bytes(b[0:2], byteorder="little", signed=False)
-            # The ADC reading are big endian since that is what the ADC returns
+            # The ADC readings are big endian since that is what the ADC returns
             # and the firmware doesn't do any processing on it.
-            ch0 = int.from_bytes(b[2:5], byteorder="big", signed=True)
-            ch1 = int.from_bytes(b[5:8], byteorder="big", signed=True)
-            ch2 = int.from_bytes(b[8:11], byteorder="big", signed=True)
-            ch3 = int.from_bytes(b[11:14], byteorder="big", signed=True)
+            ch0 = int.from_bytes(b[0:3], byteorder="big", signed=True)
+            ch1 = int.from_bytes(b[3:6], byteorder="big", signed=True)
+            ch2 = int.from_bytes(b[6:9], byteorder="big", signed=True)
+            ch3 = int.from_bytes(b[9:12], byteorder="big", signed=True)
 
-            crc = int.from_bytes(b[14:15], byteorder="little", signed=False)
-
-            return FeedData(status, ch0, ch1, ch2, ch3, crc)
+            return FeedData(ch0, ch1, ch2, ch3)
 
         @staticmethod
-        def unpack(b: bytearray | bytes) -> list[FeedData]:
-            """Unpack a notification packet which is a bunch of FeedData concatenated."""
-            packed_bytes = DynamiteSampler.ADCFeed._packed_bytes
-            assert len(b) % packed_bytes == 0
+        def unpack(b: bytearray | bytes) -> FeedPacket:
+            """Unpack a notification packet: 3-byte header + N x 12-byte samples."""
+            header_bytes = DynamiteSampler.ADCFeed._header_bytes
+            sample_bytes = DynamiteSampler.ADCFeed._sample_bytes
 
-            feed_datas = []
-            for start in range(0, len(b), packed_bytes):
-                s = slice(start, start + packed_bytes)
-                feed_datas.append(DynamiteSampler.ADCFeed._unpack_single(b[s]))
+            assert len(b) >= header_bytes
+            header = DynamiteSampler.ADCFeed._unpack_header(b[:header_bytes])
 
-            return feed_datas
+            payload = b[header_bytes:]
+            assert len(payload) % sample_bytes == 0
+
+            samples = []
+            for start in range(0, len(payload), sample_bytes):
+                s = slice(start, start + sample_bytes)
+                samples.append(DynamiteSampler.ADCFeed._unpack_single(payload[s]))
+
+            return FeedPacket(header, samples)
 
     class LoadCellCalibration(BLECharacteristicRead[tuple]):
-        """Characteristic that contains the calibration data. Read only."""
+        """Characteristic that contains the calibration data. Read only.
+
+        The firmware sends the entire calibration partition (255 bytes).
+        The calibration values are stored in the first 8 bytes as two uint32."""
 
         # TODO - sync this with the calibration flashing script
 
@@ -136,12 +167,23 @@ class DynamiteSampler(BLEService):
         def unpack(b: bytes | bytearray) -> tuple[int, int]:
             format = DynamiteSampler.LoadCellCalibration._format
             format_len = struct.calcsize(format)
+            # Firmware sends the full calibration partition (255 bytes);
+            # the actual calibration data is in the first 8 bytes.
             assert len(b) >= format_len
 
             return struct.unpack(format, b[0:format_len])
 
     class ADCConfig(BLECharacteristicRead[ADCConfigData]):
-        """Characteristic (Read-only) of the ADC configuration values"""
+        """Characteristic (Read-only) of the ADC configuration values.
+
+        Network format (AdcConfigNetworkData, little-endian, packed):
+            version: uint8   [0]
+            id:      uint16  [1:3]
+            status:  uint16  [3:5]
+            mode:    uint16  [5:7]
+            clock:   uint16  [7:9]
+            pga:     uint16  [9:11]
+        """
 
         UUID = "adcc0f19-2575-4502-9a48-0e99974eb34f"
 
@@ -151,13 +193,11 @@ class DynamiteSampler(BLEService):
             version = b[0]
             assert version == 1, "Can't parse this version"
 
-            num_ch = b[1]
-
-            reg_id = ADS131M04Register.ID.from_buffer(b[2:4])
-            reg_status = ADS131M04Register.Status.from_buffer(b[4:6])
-            reg_mode = ADS131M04Register.Mode.from_buffer(b[6:8])
-            reg_clock = ADS131M04Register.Clock.from_buffer(b[8:10])
-            reg_gain = ADS131M04Register.Gain.from_buffer(b[10:12])
+            reg_id = ADS131M04Register.ID.from_buffer(bytearray(b[1:3]))
+            reg_status = ADS131M04Register.Status.from_buffer(bytearray(b[3:5]))
+            reg_mode = ADS131M04Register.Mode.from_buffer(bytearray(b[5:7]))
+            reg_clock = ADS131M04Register.Clock.from_buffer(bytearray(b[7:9]))
+            reg_gain = ADS131M04Register.Gain.from_buffer(bytearray(b[9:11]))
 
             # TODO: not all of the registers are exposed, so for now print all of them
             # for debug purposes.
@@ -166,6 +206,9 @@ class DynamiteSampler(BLEService):
             print(reg_mode)
             print(reg_clock)
             print(reg_gain)
+
+            # num_channels is derived from the ID register's CHANCNT field
+            num_ch = reg_id.CHANCNT
 
             pow_mode_dict = {0: "VERY_LOW_POWER", 1: "LOW_POWER", 2: "HIGH_RESOLUTION"}
             pow_mode = pow_mode_dict[reg_clock.PWR]
@@ -198,7 +241,6 @@ class OTA(BLEService):
         DONE_NAK = bytearray.fromhex("06")
 
     class Data:
-
         UUID = "23408888-1f40-4cd8-9b89-ca8d45f8a5b0"
 
 
