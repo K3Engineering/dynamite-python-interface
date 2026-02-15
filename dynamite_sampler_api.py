@@ -27,8 +27,7 @@ class ADCConfigData:
 class FeedHeader:
     """Packet header prepended to each BLE ADC feed notification."""
 
-    sz: int  # Number of payload bytes (uint8)
-    order: int  # Running sample counter (uint16, little-endian)
+    sample_sequence_number: int  # Running sample counter (uint16, little-endian)
 
 
 @dataclasses.dataclass
@@ -101,33 +100,30 @@ class DynamiteSampler(BLEService):
 
         UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-        _header_bytes: ClassVar[int] = 3  # sz (1B) + order (2B)
+        _header_bytes: ClassVar[int] = 2  # ssn (2B)
         _sample_bytes: ClassVar[int] = 12  # 4 channels x 3 bytes each
 
         @staticmethod
         def _unpack_header(b: bytearray | bytes) -> FeedHeader:
-            """Unpack the 3-byte packet header."""
-            sz = b[0]
-            order = int.from_bytes(b[1:3], byteorder="little", signed=False)
-            return FeedHeader(sz, order)
+            """Unpack the packet header."""
+            ssn = int.from_bytes(b[0:2], byteorder="little", signed=False)
+            return FeedHeader(ssn)
 
         @staticmethod
         def _unpack_single(b: bytearray | bytes) -> FeedData:
             """Unpack a single ADC sample (4 channels, 3 bytes each, big-endian)."""
             assert len(b) == DynamiteSampler.ADCFeed._sample_bytes
 
-            # The ADC readings are big endian since that is what the ADC returns
-            # and the firmware doesn't do any processing on it.
-            ch0 = int.from_bytes(b[0:3], byteorder="big", signed=True)
-            ch1 = int.from_bytes(b[3:6], byteorder="big", signed=True)
-            ch2 = int.from_bytes(b[6:9], byteorder="big", signed=True)
-            ch3 = int.from_bytes(b[9:12], byteorder="big", signed=True)
+            ch0 = int.from_bytes(b[0:3], byteorder="little", signed=True)
+            ch1 = int.from_bytes(b[3:6], byteorder="little", signed=True)
+            ch2 = int.from_bytes(b[6:9], byteorder="little", signed=True)
+            ch3 = int.from_bytes(b[9:12], byteorder="little", signed=True)
 
             return FeedData(ch0, ch1, ch2, ch3)
 
         @staticmethod
         def unpack(b: bytearray | bytes) -> FeedPacket:
-            """Unpack a notification packet: 3-byte header + N x 12-byte samples."""
+            """Unpack a notification packet: 2-byte header + N x 12-byte samples."""
             header_bytes = DynamiteSampler.ADCFeed._header_bytes
             sample_bytes = DynamiteSampler.ADCFeed._sample_bytes
 

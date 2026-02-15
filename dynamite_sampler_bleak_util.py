@@ -29,7 +29,13 @@ class NotifyCallbackFeeddatas:
         device_dict contains meta data about the device."""
         pass
 
-    def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData]):
+    def callback(
+        self, header: ds.FeedHeader, feeddatas: list[ds.FeedData], missing: int
+    ):
+        """Parsed header with the sample sequence number unwrapped
+        List of sample feed data
+        Count of samples missed (BLE dropped) since the last time this callback was called
+        """
         pass
 
     def cleanup(self):
@@ -165,19 +171,43 @@ async def dynamite_sampler_connect_notify(
 
         feeddata_queue = asyncio.Queue()
 
-        def notify_callback(chr: bleak.BleakGATTCharacteristic, data: bytearray):
+        def notify_callback(sender: bleak.BleakGATTCharacteristic, data: bytearray):
             feeddata_queue.put_nowait(data)
 
         await client.start_notify(ds.DynamiteSampler.ADCFeed.UUID, notify_callback)
         print("notify started")
+        # Track the total unwrapped sequence number to detect missed packets and handling
+        # 16-bit turnover.
+        ssn_unwrap_expected = None
+        UINT16_MODULO = 2**16
         while True:
             raw_data = await feeddata_queue.get()
             feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
+
+            # Initialize counter on the first packet received.
+            ssn = feed_packet.header.sample_sequence_number
+            if ssn_unwrap_expected is None:
+                ssn_unwrap_expected = ssn
+
+            # Calculate missed samples using modulo arithmetic.
+            # This effectively handles the 16-bit rollover (e.g., expected 65535, got 0).
+            # Assumption: Connection outages will not last longer than one full 16-bit cycle (approx 65s).
+            missed_samples = (ssn - ssn_unwrap_expected) % UINT16_MODULO
+
+            # Update the packet header with the absolute (unwrapped) sequence number.
+            # This allows downstream callbacks to treat time as linear/infinite rather
+            # than handling 16-bit overflows themselves.
+            ssn_unwrap_current = ssn_unwrap_expected + missed_samples
+            feed_packet.header.sample_sequence_number = ssn_unwrap_current
+
+            # Update state for the next iteration:
+            # Current Absolute Position + number of samples received = Next Expected Position
+            ssn_unwrap_expected = ssn_unwrap_current + len(feed_packet.samples)
 
             for cbr in callbacks_raw:
                 cbr.callback(raw_data)
 
             for cbfd in callbacks_feeddata:
-                cbfd.callback(feed_packet.header, feed_packet.samples)
+                cbfd.callback(feed_packet.header, feed_packet.samples, missed_samples)
 
     print("Device has disconnected.")
