@@ -27,8 +27,7 @@ class ADCConfigData:
 class FeedHeader:
     """Packet header prepended to each BLE ADC feed notification."""
 
-    sz: int  # Number of payload bytes (uint8)
-    order: int  # Running sample counter (uint16, little-endian)
+    sample_sequence_number: int  # Running sample counter (uint16, little-endian)
 
 
 @dataclasses.dataclass

@@ -10,6 +10,7 @@ import inspect
 import socket
 import json
 import pathlib
+import itertools
 
 from typing import Optional
 
@@ -43,17 +44,18 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
         print("#", "CSV setup:", datetime.datetime.now(), file=self.csv_file)
         print("#", device_dict, file=self.csv_file)
 
-        fieldnames_feedheader = inspect.getfullargspec(ds.FeedHeader.__init__).args[1:]
+        # fieldnames_feedheader = inspect.getfullargspec(ds.FeedHeader.__init__).args[1:]
         fieldnames_feeddata = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
-        fieldnames = fieldnames_feedheader + fieldnames_feeddata
+        fieldnames = itertools.chain(("Sample Sequence Number",), fieldnames_feeddata)
 
         self.writer = csv.DictWriter(self.csv_file, fieldnames)
         self.writer.writeheader()
 
-    def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData]):
+    def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData], missing):
         # print("callback in csv writer")
-        for data in feeddatas:
-            self.writer.writerow(collections.ChainMap(header.__dict__, data.__dict__))
+        for i, data in enumerate(feeddatas):
+            ssn_dict = {"Sample Sequence Number": header.sample_sequence_number + i}
+            self.writer.writerow(collections.ChainMap(ssn_dict, data.__dict__))
 
     def cleanup(self):
         print("Closing csv file")
@@ -172,6 +174,9 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
         self.conversion_str = conversion
         self.servers: list[socket.socket] = []
 
+        # What data to send when samples where dropped
+        self.empty_data = ds.FeedData(0, 0, 0, 0)
+
     def setup(self, device_dict):
         input("Press enter to start socket connections")
         for port in self.ports:
@@ -209,8 +214,10 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
             )
             server.send(scale_factor.to_bytes(4, "little", signed=True))
 
-    def callback(self, header, feeddatas):
-        for data in feeddatas:
+    def callback(self, header, feeddatas, missing):
+        # Send empty data for the other side to know that packets were missed
+
+        for data in itertools.chain((self.empty_data,) * missing, feeddatas):
             for server, ch_val in zip(
                 self.servers, (data.ch0, data.ch1, data.ch2, data.ch3)
             ):
