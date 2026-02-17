@@ -46,7 +46,7 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
 
         # fieldnames_feedheader = inspect.getfullargspec(ds.FeedHeader.__init__).args[1:]
         fieldnames_feeddata = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
-        fieldnames = itertools.chain(("Sample Sequence Number",), fieldnames_feeddata)
+        fieldnames = ["Sample Sequence Number"] + fieldnames_feeddata
 
         self.writer = csv.DictWriter(self.csv_file, fieldnames)
         self.writer.writeheader()
