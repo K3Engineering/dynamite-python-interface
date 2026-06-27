@@ -1,5 +1,6 @@
 import asyncio
 from typing import Iterable, Optional, Optional
+import aioconsole
 
 import dynamite_sampler_api as ds
 
@@ -106,6 +107,27 @@ async def write_characteristic(
     await client.write_gatt_char(cls.UUID, cls.pack(data), response=response)
 
 
+async def vref_toggle_task(client: bleak.BleakClient):
+    """Background task to toggle VREF by sending a command to the device when 'v' is pressed."""
+    vref_state = 0
+    print("VREF toggle task started. Press 'v' to toggle VREF.")
+    try:
+        while True:
+            char = await aioconsole.ainput()
+            if char.strip().lower() == "v":
+                vref_state = 1 if vref_state == 0 else 0
+                state_str = "ON" if vref_state else "OFF"
+                print(f"\n[VREF TOGGLED {state_str}]\n")
+                try:
+                    await write_characteristic(
+                        client, ds.DynamiteSampler.ADCDebugCtrl, vref_state
+                    )
+                except Exception as e:
+                    print(f"\n[Failed to toggle VREF: {e}]\n")
+    except asyncio.CancelledError:
+        pass
+
+
 # TODO rename main to something that describes that it streams the data to callbacks
 async def dynamite_sampler_connect_notify(
     callbacks_raw: Iterable[NotifyCallbackRawData],
@@ -171,6 +193,8 @@ async def dynamite_sampler_connect_notify(
 
         feeddata_queue = asyncio.Queue()
 
+        vref_task = asyncio.create_task(vref_toggle_task(client))
+
         def notify_callback(sender: bleak.BleakGATTCharacteristic, data: bytearray):
             feeddata_queue.put_nowait(data)
 
@@ -180,34 +204,39 @@ async def dynamite_sampler_connect_notify(
         # 16-bit turnover.
         ssn_unwrap_expected = None
         UINT16_MODULO = 2**16
-        while True:
-            raw_data = await feeddata_queue.get()
-            feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
+        try:
+            while True:
+                raw_data = await feeddata_queue.get()
+                feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
 
-            # Initialize counter on the first packet received.
-            ssn = feed_packet.header.sample_sequence_number
-            if ssn_unwrap_expected is None:
-                ssn_unwrap_expected = ssn
+                # Initialize counter on the first packet received.
+                ssn = feed_packet.header.sample_sequence_number
+                if ssn_unwrap_expected is None:
+                    ssn_unwrap_expected = ssn
 
-            # Calculate missed samples using modulo arithmetic.
-            # This effectively handles the 16-bit rollover (e.g., expected 65535, got 0).
-            # Assumption: Connection outages will not last longer than one full 16-bit cycle (approx 65s).
-            missed_samples = (ssn - ssn_unwrap_expected) % UINT16_MODULO
+                # Calculate missed samples using modulo arithmetic.
+                # This effectively handles the 16-bit rollover (e.g., expected 65535, got 0).
+                # Assumption: Connection outages will not last longer than one full 16-bit cycle (approx 65s).
+                missed_samples = (ssn - ssn_unwrap_expected) % UINT16_MODULO
 
-            # Update the packet header with the absolute (unwrapped) sequence number.
-            # This allows downstream callbacks to treat time as linear/infinite rather
-            # than handling 16-bit overflows themselves.
-            ssn_unwrap_current = ssn_unwrap_expected + missed_samples
-            feed_packet.header.sample_sequence_number = ssn_unwrap_current
+                # Update the packet header with the absolute (unwrapped) sequence number.
+                # This allows downstream callbacks to treat time as linear/infinite rather
+                # than handling 16-bit overflows themselves.
+                ssn_unwrap_current = ssn_unwrap_expected + missed_samples
+                feed_packet.header.sample_sequence_number = ssn_unwrap_current
 
-            # Update state for the next iteration:
-            # Current Absolute Position + number of samples received = Next Expected Position
-            ssn_unwrap_expected = ssn_unwrap_current + len(feed_packet.samples)
+                # Update state for the next iteration:
+                # Current Absolute Position + number of samples received = Next Expected Position
+                ssn_unwrap_expected = ssn_unwrap_current + len(feed_packet.samples)
 
-            for cbr in callbacks_raw:
-                cbr.callback(raw_data)
+                for cbr in callbacks_raw:
+                    cbr.callback(raw_data)
 
-            for cbfd in callbacks_feeddata:
-                cbfd.callback(feed_packet.header, feed_packet.samples, missed_samples)
+                for cbfd in callbacks_feeddata:
+                    cbfd.callback(
+                        feed_packet.header, feed_packet.samples, missed_samples
+                    )
+        finally:
+            vref_task.cancel()
 
     print("Device has disconnected.")

@@ -169,6 +169,17 @@ class DynamiteSampler(BLEService):
 
     #         return struct.unpack(format, b[0:format_len])
 
+    class ADCDebugCtrl(BLECharacteristicWrite[int]):
+        """Characteristic that accepts runtime debug commands.
+        Used primarily for toggling VREF."""
+
+        UUID = "e8a93108-7253-4eb0-a355-6b45a0b411d3"
+
+        @staticmethod
+        def pack(val: int) -> bytes:
+            """Write 0 or 1 as a single byte"""
+            return val.to_bytes(signed=False, length=1)
+
     class ADCConfig(BLECharacteristicRead[ADCConfigData]):
         """Characteristic (Read-only) of the ADC configuration values.
 
