@@ -150,7 +150,6 @@ async def dynamite_sampler_connect_notify(
             ds.DeviceInfo.FirmwareRevision,
             ds.DeviceInfo.ManufacturerName,
             ds.DeviceInfo.TxPowerLevel,
-            # ds.DynamiteSampler.LoadCellCalibration,
             ds.DynamiteSampler.ADCConfig,
         )
         dev_info_dict = {

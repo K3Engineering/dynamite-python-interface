@@ -140,35 +140,6 @@ class DynamiteSampler(BLEService):
 
             return FeedPacket(header, samples)
 
-    # class LoadCellCalibration(BLECharacteristicRead[tuple]):
-    #     """Characteristic that contains the calibration data. Read only.
-
-    #     The firmware sends the entire calibration partition (255 bytes).
-    #     The calibration values are stored in the first 8 bytes as two uint32."""
-
-    #     # TODO - sync this with the calibration flashing script
-
-    #     UUID = "10adce11-68a6-450b-9810-ca11b39fd283"
-
-    #     _format = "II"
-
-    #     @staticmethod
-    #     def pack(data1: int, data2: int) -> bytes:
-    #         """Generate the raw bytes to be flashed to the calibration partition"""
-    #         # TODO this format needs to be synced between this script and the client.
-    #         format = DynamiteSampler.LoadCellCalibration._format
-    #         return struct.pack(format, int(data1), int(data2))
-
-    #     @staticmethod
-    #     def unpack(b: bytes | bytearray) -> tuple[int, int]:
-    #         format = DynamiteSampler.LoadCellCalibration._format
-    #         format_len = struct.calcsize(format)
-    #         # Firmware sends the full calibration partition (255 bytes);
-    #         # the actual calibration data is in the first 8 bytes.
-    #         assert len(b) >= format_len
-
-    #         return struct.unpack(format, b[0:format_len])
-
     class ADCConfig(BLECharacteristicRead[ADCConfigData]):
         """Characteristic (Read-only) of the ADC configuration values.
 
