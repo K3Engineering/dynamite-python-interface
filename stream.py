@@ -190,7 +190,7 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
         if device_dict["ADCConfig"]:
             adc_gains = device_dict["ADCConfig"].gains
         else:
-            adc_gains = [1, 4, 4, 1]
+            adc_gains = [1, 1, 1, 1]
         print("Sending gains:", adc_gains)
 
         for server, gain in zip(self.servers, adc_gains):
