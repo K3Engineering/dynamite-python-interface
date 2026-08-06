@@ -12,7 +12,6 @@ import dataclasses
 import ADS131M04Register
 
 
-## Data classes that hold the parsed information from the characteristics
 # Moved outside of the service characteristic classes to make it less nested.
 # Unclear if thats the best way, TODO: decide where to put these. TODO: is dataclass a good idea?
 @dataclasses.dataclass
@@ -32,8 +31,7 @@ class FeedHeader:
 
 @dataclasses.dataclass
 class FeedData:
-    """A single ADC sample. Each BLE notification contains a header followed
-    by a concatenation of multiple FeedData samples."""
+    """A single ADC sample."""
 
     ch0: int
     ch1: int
@@ -49,8 +47,8 @@ class FeedPacket:
     samples: list[FeedData]
 
 
-## BLE services and characteristics sturcture
-# Baseclasses and typing boiler plate stuff to make the acutal API a bit more readable.
+## BLE services and characteristics structure
+# Baseclasses and typing boiler plate stuff to make the actual API a bit more readable.
 class BLEService:
     UUID: str
 
@@ -95,8 +93,9 @@ class DynamiteSampler(BLEService):
     class ADCFeed(BLECharacteristicRead[FeedPacket]):
         """Characteristic that streams the ADC values. Only has BLE Notifications.
 
-        Each notification is a packet with a 3-byte header followed by
-        concatenated 12-byte ADC samples (4 channels x 3 bytes each)."""
+        Each notification is a packet with a 2-byte header (see FeedHeader) followed by
+        concatenated 12-byte ADC samples (4 channels x 3 bytes each, signed little-endian).
+        """
 
         UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
@@ -156,7 +155,6 @@ class DynamiteSampler(BLEService):
 
         @staticmethod
         def unpack(b: bytearray | bytes) -> ADCConfigData:
-            """Unpack the BLE raw data"""
             version = b[0]
             assert version == 1, "Can't parse this version"
 
@@ -174,7 +172,6 @@ class DynamiteSampler(BLEService):
             print(reg_clock)
             print(reg_gain)
 
-            # num_channels is derived from the ID register's CHANCNT field
             num_ch = reg_id.CHANCNT
 
             pow_mode_dict = {0: "VERY_LOW_POWER", 1: "LOW_POWER", 2: "HIGH_RESOLUTION"}
@@ -251,7 +248,7 @@ class DeviceInfo(BLEService):
             return int.from_bytes(b, signed=True)
 
 
-## ADC converstion utility functions
+## ADC conversion utility functions
 # TODO: Have the function just return the scale factor and not do the converting.
 def adc_reading_to_voltage(
     reading: int,

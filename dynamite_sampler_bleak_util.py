@@ -106,7 +106,6 @@ async def write_characteristic(
     await client.write_gatt_char(cls.UUID, cls.pack(data), response=response)
 
 
-# TODO rename main to something that describes that it streams the data to callbacks
 async def dynamite_sampler_connect_notify(
     callbacks_raw: Iterable[NotifyCallbackRawData],
     callbacks_feeddata: Iterable[NotifyCallbackFeeddatas],

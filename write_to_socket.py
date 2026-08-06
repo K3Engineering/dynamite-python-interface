@@ -10,7 +10,6 @@ import socket
 from bt import bt_setup
 from replay import replay_setup
 
-
 parsed_bt_queue = asyncio.Queue()
 shutdown_event = threading.Event()
 
