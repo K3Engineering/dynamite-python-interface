@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Stream Dynamite sampler data to various locations"""
+
 import argparse
 import asyncio
 import datetime
@@ -257,7 +258,7 @@ if __name__ == "__main__":
     for flag, cls, dest in arg_classes:
         # TODO add help to the arguments
         # each argument will append a class instance to the dest.
-        # optionaly each flag can take in a string json that will be parsed and passed
+        # optionally each flag can take in a string json that will be parsed and passed
         # into the initializer as keyword args.
         parser.add_argument(
             flag,
