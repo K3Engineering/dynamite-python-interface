@@ -106,6 +106,146 @@ async def write_characteristic(
     await client.write_gatt_char(cls.UUID, cls.pack(data), response=response)
 
 
+class SsnUnwrapper:
+    """Unwraps the feed's 16-bit sample sequence number to a linear counter
+    and counts missed samples, handling the 16-bit rollover (e.g. expected
+    65535, got 0). Assumption: connection outages never last a full 16-bit
+    cycle (~65 s)."""
+
+    UINT16_MODULO = 2**16
+
+    def __init__(self):
+        self._expected = None
+
+    def unwrap_and_modify(self, feed_packet) -> int:
+        """Rewrite feed_packet.header.sample_sequence_number to the absolute
+        (unwrapped) value in place; return samples missed since the previous
+        packet. Downstream callbacks can then treat sequence numbers as
+        linear/infinite."""
+        ssn = feed_packet.header.sample_sequence_number
+        if self._expected is None:
+            self._expected = ssn  # initialize on the first packet
+        missed_samples = (ssn - self._expected) % self.UINT16_MODULO
+        unwrapped = self._expected + missed_samples
+        feed_packet.header.sample_sequence_number = unwrapped
+        self._expected = unwrapped + len(feed_packet.samples)
+        return missed_samples
+
+
+# Idle-poll cadence for mid-stream disconnect detection in FeedSession.
+# bleak only reports disconnects through a disconnected_callback passed to
+# the BleakClient constructor, but FeedSession receives an already-connected
+# client — so the pump polls is_connected rather than trusting the queue.
+_DISCONNECT_POLL_S = 1.0
+
+
+class FeedSession:
+    """ADC feed streaming on an already-connected client, caller-controlled.
+
+    Pumps notifications in a background task so the caller keeps the event
+    loop — e.g. to operate a stimulus while streaming, then stop on demand.
+    Used by the factory calibration script.
+
+    On a mid-stream disconnect the pump drains the buffered packets and
+    exits within _DISCONNECT_POLL_S instead of blocking on the queue
+    forever; the caller observes it as "no more data arrives".
+    """
+
+    def __init__(
+        self,
+        client: bleak.BleakClient,
+        callbacks_raw: Iterable[NotifyCallbackRawData] = (),
+        callbacks_feeddata: Iterable[NotifyCallbackFeeddatas] = (),
+        device_info: Optional[dict] = None,
+    ):
+        self._client = client
+        self._callbacks_raw = list(callbacks_raw)
+        self._callbacks_feeddata = list(callbacks_feeddata)
+        # Passed to the callbacks' setup(); read from the device when not given.
+        self._device_info = device_info
+        self._queue: Optional[asyncio.Queue] = None
+        self._pump_task: Optional[asyncio.Task] = None
+
+    @property
+    def device_info(self) -> Optional[dict]:
+        """Device metadata passed to the callbacks' setup(); read from the
+        device by start() unless given to the constructor."""
+        return self._device_info
+
+    async def fetch_device_info(self):
+        dev_info_cls = (
+            ds.DeviceInfo.FirmwareRevision,
+            ds.DeviceInfo.ManufacturerName,
+            ds.DeviceInfo.TxPowerLevel,
+            ds.DynamiteSampler.ADCConfig,
+        )
+        self._device_info = {
+            cls.__name__: await read_characteristic(self._client, cls)
+            for cls in dev_info_cls
+        }
+
+    async def start(self):
+        if self._device_info is None:
+            await self.fetch_device_info()
+
+        for cb in (*self._callbacks_raw, *self._callbacks_feeddata):
+            cb.setup(self._device_info)
+
+        self._queue = asyncio.Queue()
+
+        def notify_callback(sender: bleak.BleakGATTCharacteristic, data: bytearray):
+            self._queue.put_nowait(data)
+
+        await self._client.start_notify(
+            ds.DynamiteSampler.ADCFeed.UUID, notify_callback
+        )
+        self._pump_task = asyncio.create_task(self._pump())
+
+    async def _pump(self):
+        unwrapper = SsnUnwrapper()
+        while True:
+            try:
+                raw_data = await asyncio.wait_for(self._queue.get(), _DISCONNECT_POLL_S)
+            except asyncio.TimeoutError:
+                if not self._client.is_connected:
+                    print("FeedSession: device disconnected, feed pump stopped")
+                    return
+                continue
+            feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
+            missed_samples = unwrapper.unwrap_and_modify(feed_packet)
+
+            for cbr in self._callbacks_raw:
+                cbr.callback(raw_data)
+            for cbfd in self._callbacks_feeddata:
+                cbfd.callback(feed_packet.header, feed_packet.samples, missed_samples)
+
+    async def wait_done(self):
+        """Block until the feed pump exits — on a mid-stream disconnect, or
+        after stop() has been called."""
+        if self._pump_task is not None:
+            await self._pump_task
+
+    async def stop(self):
+        """Stop streaming. Safe to call twice, and after a partial start."""
+        if self._pump_task is not None:
+            self._pump_task.cancel()
+            try:
+                await self._pump_task
+            except asyncio.CancelledError:
+                pass
+            self._pump_task = None
+        if self._client.is_connected:
+            try:
+                await self._client.stop_notify(ds.DynamiteSampler.ADCFeed.UUID)
+            except Exception:
+                pass  # never subscribed, or the backend already tore it down
+        for cb in (*self._callbacks_raw, *self._callbacks_feeddata):
+            try:
+                cb.cleanup()
+            except Exception as e:
+                print(f"  cleanup error for {cb}: {e}")
+
+
 async def dynamite_sampler_connect_notify(
     callbacks_raw: Iterable[NotifyCallbackRawData],
     callbacks_feeddata: Iterable[NotifyCallbackFeeddatas],
@@ -119,25 +259,8 @@ async def dynamite_sampler_connect_notify(
     if not device:
         return
 
-    def disco(dev):
-        print("Disconnecting from device:", dev)
-        print("Starting callback clean-up")
-        for cbr in callbacks_raw:
-            try:
-                cbr.cleanup()
-            except Exception as e:
-                print(f"  cleanup error for {cbr}: {e}")
-
-        for cbfd in callbacks_feeddata:
-            try:
-                cbfd.cleanup()
-            except Exception as e:
-                print(f"  cleanup error for {cbfd}: {e}")
-
-        print("Finished callback clean-up")
-
     print("Connecting to:", device)
-    async with bleak.BleakClient(device, disconnected_callback=disco) as client:
+    async with bleak.BleakClient(device) as client:
         print("Connected!")
 
         # TODO this is temporary, have the power setting be passed it, or have a callback
@@ -145,67 +268,21 @@ async def dynamite_sampler_connect_notify(
             print(f"Setting TX power to {tx_power} dBm")
             await write_characteristic(client, ds.TxPower.TxPowerSet, tx_power)
 
-        dev_info_cls = (
-            ds.DeviceInfo.FirmwareRevision,
-            ds.DeviceInfo.ManufacturerName,
-            ds.DeviceInfo.TxPowerLevel,
-            ds.DynamiteSampler.ADCConfig,
-        )
-        dev_info_dict = {
-            cls.__name__: await read_characteristic(client, cls) for cls in dev_info_cls
-        }
-
+        session = FeedSession(client, callbacks_raw, callbacks_feeddata)
+        await session.fetch_device_info()
         # TODO figure out how to best print this?
         print("Device information:")
-        for key, value in dev_info_dict.items():
+        for key, value in session.device_info.items():
             print("\t", key, ":", value)
 
-        # Setting up callbacks
-        for cbr in callbacks_raw:
-            cbr.setup(dev_info_dict)
-
-        for cbfd in callbacks_feeddata:
-            cbfd.setup(dev_info_dict)
-
-        feeddata_queue = asyncio.Queue()
-
-        def notify_callback(sender: bleak.BleakGATTCharacteristic, data: bytearray):
-            feeddata_queue.put_nowait(data)
-
-        await client.start_notify(ds.DynamiteSampler.ADCFeed.UUID, notify_callback)
+        await session.start()
         print("notify started")
-        # Track the total unwrapped sequence number to detect missed packets and handling
-        # 16-bit turnover.
-        ssn_unwrap_expected = None
-        UINT16_MODULO = 2**16
-        while True:
-            raw_data = await feeddata_queue.get()
-            feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
-
-            # Initialize counter on the first packet received.
-            ssn = feed_packet.header.sample_sequence_number
-            if ssn_unwrap_expected is None:
-                ssn_unwrap_expected = ssn
-
-            # Calculate missed samples using modulo arithmetic.
-            # This effectively handles the 16-bit rollover (e.g., expected 65535, got 0).
-            # Assumption: Connection outages will not last longer than one full 16-bit cycle (approx 65s).
-            missed_samples = (ssn - ssn_unwrap_expected) % UINT16_MODULO
-
-            # Update the packet header with the absolute (unwrapped) sequence number.
-            # This allows downstream callbacks to treat time as linear/infinite rather
-            # than handling 16-bit overflows themselves.
-            ssn_unwrap_current = ssn_unwrap_expected + missed_samples
-            feed_packet.header.sample_sequence_number = ssn_unwrap_current
-
-            # Update state for the next iteration:
-            # Current Absolute Position + number of samples received = Next Expected Position
-            ssn_unwrap_expected = ssn_unwrap_current + len(feed_packet.samples)
-
-            for cbr in callbacks_raw:
-                cbr.callback(raw_data)
-
-            for cbfd in callbacks_feeddata:
-                cbfd.callback(feed_packet.header, feed_packet.samples, missed_samples)
+        try:
+            await session.wait_done()  # returns on mid-stream disconnect
+        finally:
+            print("Disconnecting from device:", device)
+            print("Starting callback clean-up")
+            await session.stop()
+            print("Finished callback clean-up")
 
     print("Device has disconnected.")
