@@ -117,7 +117,7 @@ class SsnUnwrapper:
     def __init__(self):
         self._expected = None
 
-    def feed(self, feed_packet) -> int:
+    def unwrap_and_modify(self, feed_packet) -> int:
         """Rewrite feed_packet.header.sample_sequence_number to the absolute
         (unwrapped) value in place; return samples missed since the previous
         packet. Downstream callbacks can then treat sequence numbers as
@@ -172,18 +172,22 @@ class FeedSession:
         device by start() unless given to the constructor."""
         return self._device_info
 
+    async def fetch_device_info(self):
+        dev_info_cls = (
+            ds.DeviceInfo.FirmwareRevision,
+            ds.DeviceInfo.ManufacturerName,
+            ds.DeviceInfo.TxPowerLevel,
+            ds.DynamiteSampler.ADCConfig,
+        )
+        self._device_info = {
+            cls.__name__: await read_characteristic(self._client, cls)
+            for cls in dev_info_cls
+        }
+
     async def start(self):
         if self._device_info is None:
-            dev_info_cls = (
-                ds.DeviceInfo.FirmwareRevision,
-                ds.DeviceInfo.ManufacturerName,
-                ds.DeviceInfo.TxPowerLevel,
-                ds.DynamiteSampler.ADCConfig,
-            )
-            self._device_info = {
-                cls.__name__: await read_characteristic(self._client, cls)
-                for cls in dev_info_cls
-            }
+            await self.fetch_device_info()
+
         for cb in (*self._callbacks_raw, *self._callbacks_feeddata):
             cb.setup(self._device_info)
 
@@ -201,16 +205,14 @@ class FeedSession:
         unwrapper = SsnUnwrapper()
         while True:
             try:
-                raw_data = await asyncio.wait_for(
-                    self._queue.get(), _DISCONNECT_POLL_S
-                )
+                raw_data = await asyncio.wait_for(self._queue.get(), _DISCONNECT_POLL_S)
             except asyncio.TimeoutError:
                 if not self._client.is_connected:
                     print("FeedSession: device disconnected, feed pump stopped")
                     return
                 continue
             feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
-            missed_samples = unwrapper.feed(feed_packet)
+            missed_samples = unwrapper.unwrap_and_modify(feed_packet)
 
             for cbr in self._callbacks_raw:
                 cbr.callback(raw_data)
@@ -267,14 +269,15 @@ async def dynamite_sampler_connect_notify(
             await write_characteristic(client, ds.TxPower.TxPowerSet, tx_power)
 
         session = FeedSession(client, callbacks_raw, callbacks_feeddata)
-        await session.start()
-        try:
-            # TODO figure out how to best print this?
-            print("Device information:")
-            for key, value in session.device_info.items():
-                print("\t", key, ":", value)
+        await session.fetch_device_info()
+        # TODO figure out how to best print this?
+        print("Device information:")
+        for key, value in session.device_info.items():
+            print("\t", key, ":", value)
 
-            print("notify started")
+        await session.start()
+        print("notify started")
+        try:
             await session.wait_done()  # returns on mid-stream disconnect
         finally:
             print("Disconnecting from device:", device)
