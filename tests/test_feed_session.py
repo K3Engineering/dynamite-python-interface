@@ -35,7 +35,7 @@ class FeedSessionTest(unittest.TestCase):
             self.assertIsNotNone(session._pump_task)
 
             client.is_connected = False  # simulate a drop mid-stream
-            await asyncio.wait_for(session._pump_task, timeout=1.0)
+            await asyncio.wait_for(session.wait_done(), timeout=1.0)
 
             await session.stop()  # must stay clean after a disconnect
 

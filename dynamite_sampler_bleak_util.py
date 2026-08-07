@@ -142,10 +142,9 @@ _DISCONNECT_POLL_S = 1.0
 class FeedSession:
     """ADC feed streaming on an already-connected client, caller-controlled.
 
-    Unlike dynamite_sampler_connect_notify (which scans, asks interactively,
-    and runs until disconnect), this pumps notifications in a background task
-    so the caller keeps the event loop — e.g. to operate a stimulus while
-    streaming, then stop on demand. Used by the factory calibration script.
+    Pumps notifications in a background task so the caller keeps the event
+    loop — e.g. to operate a stimulus while streaming, then stop on demand.
+    Used by the factory calibration script.
 
     On a mid-stream disconnect the pump drains the buffered packets and
     exits within _DISCONNECT_POLL_S instead of blocking on the queue
@@ -166,6 +165,12 @@ class FeedSession:
         self._device_info = device_info
         self._queue: Optional[asyncio.Queue] = None
         self._pump_task: Optional[asyncio.Task] = None
+
+    @property
+    def device_info(self) -> Optional[dict]:
+        """Device metadata passed to the callbacks' setup(); read from the
+        device by start() unless given to the constructor."""
+        return self._device_info
 
     async def start(self):
         if self._device_info is None:
@@ -212,6 +217,12 @@ class FeedSession:
             for cbfd in self._callbacks_feeddata:
                 cbfd.callback(feed_packet.header, feed_packet.samples, missed_samples)
 
+    async def wait_done(self):
+        """Block until the feed pump exits — on a mid-stream disconnect, or
+        after stop() has been called."""
+        if self._pump_task is not None:
+            await self._pump_task
+
     async def stop(self):
         """Stop streaming. Safe to call twice, and after a partial start."""
         if self._pump_task is not None:
@@ -246,25 +257,8 @@ async def dynamite_sampler_connect_notify(
     if not device:
         return
 
-    def disco(dev):
-        print("Disconnecting from device:", dev)
-        print("Starting callback clean-up")
-        for cbr in callbacks_raw:
-            try:
-                cbr.cleanup()
-            except Exception as e:
-                print(f"  cleanup error for {cbr}: {e}")
-
-        for cbfd in callbacks_feeddata:
-            try:
-                cbfd.cleanup()
-            except Exception as e:
-                print(f"  cleanup error for {cbfd}: {e}")
-
-        print("Finished callback clean-up")
-
     print("Connecting to:", device)
-    async with bleak.BleakClient(device, disconnected_callback=disco) as client:
+    async with bleak.BleakClient(device) as client:
         print("Connected!")
 
         # TODO this is temporary, have the power setting be passed it, or have a callback
@@ -272,45 +266,20 @@ async def dynamite_sampler_connect_notify(
             print(f"Setting TX power to {tx_power} dBm")
             await write_characteristic(client, ds.TxPower.TxPowerSet, tx_power)
 
-        dev_info_cls = (
-            ds.DeviceInfo.FirmwareRevision,
-            ds.DeviceInfo.ManufacturerName,
-            ds.DeviceInfo.TxPowerLevel,
-            ds.DynamiteSampler.ADCConfig,
-        )
-        dev_info_dict = {
-            cls.__name__: await read_characteristic(client, cls) for cls in dev_info_cls
-        }
+        session = FeedSession(client, callbacks_raw, callbacks_feeddata)
+        await session.start()
+        try:
+            # TODO figure out how to best print this?
+            print("Device information:")
+            for key, value in session.device_info.items():
+                print("\t", key, ":", value)
 
-        # TODO figure out how to best print this?
-        print("Device information:")
-        for key, value in dev_info_dict.items():
-            print("\t", key, ":", value)
-
-        # Setting up callbacks
-        for cbr in callbacks_raw:
-            cbr.setup(dev_info_dict)
-
-        for cbfd in callbacks_feeddata:
-            cbfd.setup(dev_info_dict)
-
-        feeddata_queue = asyncio.Queue()
-
-        def notify_callback(sender: bleak.BleakGATTCharacteristic, data: bytearray):
-            feeddata_queue.put_nowait(data)
-
-        await client.start_notify(ds.DynamiteSampler.ADCFeed.UUID, notify_callback)
-        print("notify started")
-        unwrapper = SsnUnwrapper()
-        while True:
-            raw_data = await feeddata_queue.get()
-            feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
-            missed_samples = unwrapper.feed(feed_packet)
-
-            for cbr in callbacks_raw:
-                cbr.callback(raw_data)
-
-            for cbfd in callbacks_feeddata:
-                cbfd.callback(feed_packet.header, feed_packet.samples, missed_samples)
+            print("notify started")
+            await session.wait_done()  # returns on mid-stream disconnect
+        finally:
+            print("Disconnecting from device:", device)
+            print("Starting callback clean-up")
+            await session.stop()
+            print("Finished callback clean-up")
 
     print("Device has disconnected.")
