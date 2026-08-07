@@ -240,9 +240,7 @@ class DeviceInfo(BLEService):
             return str(b, "utf-8")
 
     class HardwareRevision(BLECharacteristicRead[str]):
-        """Board model, e.g. 'v700P'. Compiled into the firmware
-        (boardConfig.name in board_cfg.h); published as a fixed-size char
-        array, null padding included."""
+        """Board model, e.g. 'v700P'"""
 
         UUID = "2A27"
 
