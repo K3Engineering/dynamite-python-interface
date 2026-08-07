@@ -28,6 +28,7 @@ __all__ = [
     "NVS_TYPE_STR",
     "MAX_KEY_LEN",
     "MAX_VAL_LEN",
+    "KVS_WRITE_DELAY_S",
     "KvsError",
     "KvsClient",
 ]
@@ -53,6 +54,11 @@ MAX_KEY_LEN = 15  # firmware: USER_KVS_MAX_KEY_LEN
 MAX_VAL_LEN = 128  # firmware: USER_KVS_MAX_VAL_LEN
 
 _COMMAND_TIMEOUT_S = 5.0
+
+# Grace around (retried) KVS writes: commands are rejected while the device
+# is busy (firmware device lock, e.g. during or right after feed streaming),
+# and state changes take a moment to settle.
+KVS_WRITE_DELAY_S = 0.5
 
 
 class KvsError(Exception):
@@ -176,3 +182,28 @@ class KvsClient:
     async def keys(self, folder: str) -> list[str]:
         """All keys in the namespace."""
         return [key for key, _ in await self.list_entries(folder)]
+
+    async def set_verified(
+        self, folder: str, key: str, value: str, attempts: int = 3
+    ) -> str:
+        """SET + read-back verify, with retries (device-lock grace). Returns
+        the readback (compare against `value` to confirm the write);
+        re-raises KvsError after `attempts` failed tries."""
+        for attempt in range(attempts):
+            try:
+                await self.set(folder, key, value)
+                return await self.get(folder, key)
+            except KvsError:
+                if attempt + 1 == attempts:
+                    raise
+                await asyncio.sleep(KVS_WRITE_DELAY_S)
+        raise ValueError(f"attempts must be >= 1 (got {attempts})")
+
+    async def set_many_verified(
+        self, folder: str, entries: dict[str, str]
+    ) -> dict[str, str]:
+        """set_verified over a {key: value} mapping; returns {key: readback}."""
+        return {
+            key: await self.set_verified(folder, key, value)
+            for key, value in entries.items()
+        }
