@@ -1,5 +1,5 @@
 import asyncio
-from typing import Iterable, Optional, Optional
+from typing import Iterable, Optional
 
 import dynamite_sampler_api as ds
 
