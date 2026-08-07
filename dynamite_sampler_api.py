@@ -239,6 +239,15 @@ class DeviceInfo(BLEService):
         def unpack(b: bytearray | bytes) -> str:
             return str(b, "utf-8")
 
+    class HardwareRevision(BLECharacteristicRead[str]):
+        """Board model, e.g. 'v700P'"""
+
+        UUID = "2A27"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")
+
     class TxPowerLevel(BLECharacteristicRead[int]):
         UUID = "2A07"
 
