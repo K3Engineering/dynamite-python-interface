@@ -94,7 +94,10 @@ class KvsClient:
         elif len(devices) == 0:
             raise KvsError("No dynamite sampler devices found")
         else:
-            found = "\n".join(f"  {d.address}  {d.name}" for d, _ in devices)
+            found = "\n".join(
+                f"  {d.address}  {d.name}  (RSSI {adv.rssi} dBm)"
+                for d, adv in devices
+            )
             raise KvsError(f"{len(devices)} devices found, pass --address:\n{found}")
 
         print(f"Connecting to {device.address} ({device.name})")
