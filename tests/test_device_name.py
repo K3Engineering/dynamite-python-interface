@@ -3,7 +3,12 @@
 import asyncio
 import unittest
 
-from dynamite_sampler_kvs import FOLDER_SETTINGS, KEY_DEVICE_NAME, KvsClient, KvsError
+from dynamite_sampler_kvs import (
+    FOLDER_SETTINGS,
+    KEY_DEVICE_NAME,
+    KvsClient,
+    KvsRejected,
+)
 
 
 class FakeClient(KvsClient):
@@ -16,7 +21,7 @@ class FakeClient(KvsClient):
     async def get(self, folder, key):
         value = self.store.get((folder, key))
         if value is None:
-            raise KvsError("no such key")
+            raise KvsRejected("no such key")  # the '0' reply for a missing key
         return value
 
 

@@ -10,7 +10,8 @@ Commands: SET / GET / DEL / IDX. Folder: 'F'actory, 'U'ser, 'S'ettings.
 Keys <= 15 chars, values <= 128 chars, frames < 240 bytes.
 
 KVS commands are ignored while the ADC feed is streaming (firmware device
-lock): sequence KVS access and feed streaming, never concurrently.
+lock): the write is dropped without a reply, surfacing here as KvsTimeout.
+Sequence KVS access and feed streaming, never concurrently.
 """
 
 import asyncio
@@ -31,6 +32,8 @@ __all__ = [
     "KVS_WRITE_DELAY_S",
     "KEY_DEVICE_NAME",
     "KvsError",
+    "KvsRejected",
+    "KvsTimeout",
     "KvsClient",
 ]
 
@@ -59,14 +62,25 @@ KEY_DEVICE_NAME = "device_name"
 
 _COMMAND_TIMEOUT_S = 5.0
 
-# Grace around (retried) KVS writes: commands are rejected while the device
-# is busy (firmware device lock, e.g. during or right after feed streaming),
-# and state changes take a moment to settle.
+# Grace around (retried) KVS writes: commands time out while the device is
+# busy (firmware device lock: writes are dropped without a reply, e.g.
+# during or right after feed streaming), and state changes take a moment
+# to settle.
 KVS_WRITE_DELAY_S = 0.5
 
 
 class KvsError(Exception):
-    """The device rejected the command, or the reply never arrived."""
+    """Base for KVS command failures."""
+
+
+class KvsRejected(KvsError):
+    """The device answered '0': no such key, bad input, or IDX past the
+    last entry."""
+
+
+class KvsTimeout(KvsError, TimeoutError):
+    """No reply within the command timeout — e.g. the device lock silently
+    dropping the write. Also catchable as the builtin TimeoutError."""
 
 
 class KvsClient:
@@ -82,8 +96,12 @@ class KvsClient:
         # The BLE advertisement name the device was found under, NOT the
         # user-assigned Settings name (see get_device_name).
         self.advertised_name = advertised_name
-        # Replies are matched to requests by their echo, see _on_notify.
-        self._pending: dict[bytes, asyncio.Future[bytes]] = {}
+        # Commands are strictly serialized (the firmware answers one write
+        # at a time anyway, and out-of-order replies need exact-echo
+        # matching to be attributable at all). _pending is the single
+        # outstanding (request, future); see _on_notify.
+        self._lock = asyncio.Lock()
+        self._pending: tuple[bytes, asyncio.Future[bytes]] | None = None
 
     @classmethod
     async def connect(cls, address: str | None = None) -> "KvsClient":
@@ -126,31 +144,40 @@ class KvsClient:
 
     def _on_notify(self, _sender, data: bytearray) -> None:
         reply = bytes(data).rstrip(b"\x00")
-        for request, fut in list(self._pending.items()):
-            if not fut.done() and reply[1 : 1 + len(request)] == request:
-                del self._pending[request]
-                if (
-                    reply[:1] == b"1"
-                    and reply[1 + len(request) : 2 + len(request)] == b"="
-                ):
-                    fut.set_result(reply[2 + len(request) :])
-                else:
-                    fut.set_exception(KvsError(f"Device rejected {request!r}"))
-                return
-        print(f"Unmatched KVS notification: {reply!r}")
+        pending = self._pending
+        if pending is None:
+            return  # stale frame, e.g. arrived after its command timed out
+        request, fut = pending
+        # Only the two exact frame shapes are accepted — a prefix check on
+        # the echo would attribute e.g. a late "1GETFabcX=v" to a pending
+        # "GETFabc". Anything else (stale, foreign, or malformed) is
+        # ignored; the outstanding command's own reply or timeout settles
+        # it.
+        head = b"1" + request + b"="
+        if reply[: len(head)] == head:
+            self._pending = None
+            fut.set_result(reply[len(head) :])
+        elif reply == b"0" + request:
+            self._pending = None
+            fut.set_exception(KvsRejected(f"Device rejected {request!r}"))
 
     async def _command(self, cmd: bytes, folder: str, data: str = "") -> bytes:
         """Send a command and return the reply payload (after the '=').
 
-        Raises KvsError if the device reports failure or the reply times out."""
+        Raises KvsRejected on a '0' reply, KvsTimeout when no matching
+        reply arrives within _COMMAND_TIMEOUT_S (stale, foreign, or
+        malformed frames are ignored — see _on_notify)."""
         request = cmd + folder.encode() + data.encode()
-        fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
-        self._pending[request] = fut
-        try:
-            await self.client.write_gatt_char(KVS_CHR_UUID, request, response=True)
-            return await asyncio.wait_for(fut, _COMMAND_TIMEOUT_S)
-        finally:
-            self._pending.pop(request, None)
+        async with self._lock:
+            fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+            self._pending = (request, fut)
+            try:
+                await self.client.write_gatt_char(KVS_CHR_UUID, request, response=True)
+                return await asyncio.wait_for(fut, _COMMAND_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                raise KvsTimeout(f"No reply to {request!r}") from None
+            finally:
+                self._pending = None
 
     @staticmethod
     def _check_key_val(key: str, value: str | None = None) -> None:
@@ -177,7 +204,7 @@ class KvsClient:
         transport and framing failures raise."""
         try:
             return await self.get(FOLDER_SETTINGS, KEY_DEVICE_NAME)
-        except KvsError:
+        except KvsRejected:
             return None
 
     async def delete(self, folder: str, key: str) -> None:
@@ -192,7 +219,7 @@ class KvsClient:
                 payload = (
                     await self._command(b"IDX", folder, format(idx, "x"))
                 ).decode()
-            except KvsError:
+            except KvsRejected:
                 break  # IDX past the last key is rejected by the device
             key, _, type_hex = payload.partition("=")  # "<key>=<nvs type, hex>"
             found.append((key, int(type_hex, 16)))

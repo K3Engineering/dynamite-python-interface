@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from dynamite_sampler_kvs import KvsClient, KvsError
+from dynamite_sampler_kvs import KvsClient, KvsError, KvsTimeout
 
 
 class FakeClient(KvsClient):
@@ -12,7 +12,9 @@ class FakeClient(KvsClient):
     def __init__(self, fail_sets=0, corrupt_key=None):
         super().__init__(client=None, advertised_name="fake")
         self.store = {}
-        self.fail_sets = fail_sets  # KvsErrors to raise from set() before succeeding
+        # KvsTimeouts to raise from set() before succeeding — the firmware
+        # device lock's real failure mode (silent drop, no reply).
+        self.fail_sets = fail_sets
         self.corrupt_key = corrupt_key  # key whose readback never matches
         self.set_calls = 0
 
@@ -20,7 +22,7 @@ class FakeClient(KvsClient):
         self.set_calls += 1
         if self.fail_sets > 0:
             self.fail_sets -= 1
-            raise KvsError("device locked")
+            raise KvsTimeout("device locked (no reply)")
         stored = "corrupted" if key == self.corrupt_key else value
         self.store[(folder, key)] = stored
 
