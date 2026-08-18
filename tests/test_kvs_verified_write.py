@@ -10,7 +10,7 @@ class FakeClient(KvsClient):
     under test run against real logic."""
 
     def __init__(self, fail_sets=0, corrupt_key=None):
-        super().__init__(client=None, device_name="fake")
+        super().__init__(client=None, advertised_name="fake")
         self.store = {}
         self.fail_sets = fail_sets  # KvsErrors to raise from set() before succeeding
         self.corrupt_key = corrupt_key  # key whose readback never matches

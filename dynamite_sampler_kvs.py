@@ -29,6 +29,7 @@ __all__ = [
     "MAX_KEY_LEN",
     "MAX_VAL_LEN",
     "KVS_WRITE_DELAY_S",
+    "KEY_DEVICE_NAME",
     "KvsError",
     "KvsClient",
 ]
@@ -53,6 +54,9 @@ NVS_TYPE_STR = 0x21
 MAX_KEY_LEN = 15  # firmware: USER_KVS_MAX_KEY_LEN
 MAX_VAL_LEN = 128  # firmware: USER_KVS_MAX_VAL_LEN
 
+# Settings namespace keys (value grammar: docs/flash-schema-v1.md).
+KEY_DEVICE_NAME = "device_name"
+
 _COMMAND_TIMEOUT_S = 5.0
 
 # Grace around (retried) KVS writes: commands are rejected while the device
@@ -73,9 +77,11 @@ class KvsClient:
             await kvs.set(FOLDER_FACTORY, "exc", "4.53,nominal")
     """
 
-    def __init__(self, client: bleak.BleakClient, device_name: str):
+    def __init__(self, client: bleak.BleakClient, advertised_name: str):
         self.client = client
-        self.device_name = device_name
+        # The BLE advertisement name the device was found under, NOT the
+        # user-assigned Settings name (see get_device_name).
+        self.advertised_name = advertised_name
         # Replies are matched to requests by their echo, see _on_notify.
         self._pending: dict[bytes, asyncio.Future[bytes]] = {}
 
@@ -163,6 +169,16 @@ class KvsClient:
         self._check_key_val(key)
         payload = await self._command(b"GET", folder, key)
         return payload.decode()
+
+    async def get_device_name(self) -> str | None:
+        """The user-assigned device name (Settings namespace), or None when
+        unset — the device then goes by its advertised name. Value grammar:
+        docs/flash-schema-v1.md. A missing key is the rejection case here;
+        transport and framing failures raise."""
+        try:
+            return await self.get(FOLDER_SETTINGS, KEY_DEVICE_NAME)
+        except KvsError:
+            return None
 
     async def delete(self, folder: str, key: str) -> None:
         self._check_key_val(key)
