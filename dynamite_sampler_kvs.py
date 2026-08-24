@@ -15,6 +15,7 @@ Sequence KVS access and feed streaming, never concurrently.
 """
 
 import asyncio
+import re
 
 import bleak
 
@@ -60,6 +61,12 @@ MAX_VAL_LEN = 128  # firmware: USER_KVS_MAX_VAL_LEN
 # Settings namespace keys (value grammar: docs/flash-schema-v1.md).
 KEY_DEVICE_NAME = "device_name"
 
+# device_name grammar (docs/flash-schema-v1.md): ASCII, 1-29 chars, first
+# char alphanumeric, no outer whitespace. Enforced client-side on every
+# write — the firmware transport does not validate, and the firmware that
+# will apply this value to the GAP identity must not depend on writers.
+_DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,28}$")
+
 _COMMAND_TIMEOUT_S = 5.0
 
 # Grace around (retried) KVS writes: commands time out while the device is
@@ -81,6 +88,15 @@ class KvsRejected(KvsError):
 class KvsTimeout(KvsError, TimeoutError):
     """No reply within the command timeout — e.g. the device lock silently
     dropping the write. Also catchable as the builtin TimeoutError."""
+
+
+def _check_device_name(value: str) -> None:
+    if value != value.strip():
+        raise ValueError(f"device_name must not have outer whitespace: {value!r}")
+    if not _DEVICE_NAME_RE.fullmatch(value):
+        raise ValueError(
+            f"device_name must match {_DEVICE_NAME_RE.pattern!r}: {value!r}"
+        )
 
 
 class KvsClient:
@@ -190,6 +206,8 @@ class KvsClient:
 
     async def set(self, folder: str, key: str, value: str) -> None:
         self._check_key_val(key, value)
+        if folder == FOLDER_SETTINGS and key == KEY_DEVICE_NAME:
+            _check_device_name(value)
         await self._command(b"SET", folder, f"{key}={value}")
 
     async def get(self, folder: str, key: str) -> str:
