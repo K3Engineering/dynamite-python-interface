@@ -3,15 +3,23 @@
 Firmware protocol
 
     request : <Cmd:3><Folder:1><Cmd_data>      e.g. b"SETFexc=4.53,nominal"
-    response: '1' <request> '=' <payload>      notification, on success
-              '0' <request>                    notification, on failure
+    response: <Status> <request> ['=' <payload>]   one notification per command
+
+    '1' success  — payload follows '=' (GET: the value; IDX: key=typeHex)
+    '0' rejected — the request's fault: no such key, bad frame, IDX past
+        the last entry (this is how list_entries iteration ends)
+    'B' busy     — the device is locked (ADC feed streaming); the request
+        was not processed. Retrying is the caller's policy; set_verified
+        implements a bounded one
+    'E' error    — device-side storage (NVS) failure; never a missing key
 
 Commands: SET / GET / DEL / IDX. Folder: 'F'actory, 'U'ser, 'S'ettings.
 Keys <= 15 chars, values <= 128 chars, frames < 240 bytes.
 
-KVS commands are ignored while the ADC feed is streaming (firmware device
-lock): the write is dropped without a reply, surfacing here as KvsTimeout.
-Sequence KVS access and feed streaming, never concurrently.
+Every request gets an answer, so a missing answer (KvsTimeout) means the
+link is broken — not a busy device. Still sequence KVS access and feed
+streaming: concurrent access now fails fast with KvsBusy instead of
+hanging.
 """
 
 import asyncio
@@ -34,6 +42,8 @@ __all__ = [
     "KEY_DEVICE_NAME",
     "KvsError",
     "KvsRejected",
+    "KvsBusy",
+    "KvsDeviceError",
     "KvsTimeout",
     "KvsClient",
 ]
@@ -69,10 +79,7 @@ _DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,28}$")
 
 _COMMAND_TIMEOUT_S = 5.0
 
-# Grace around (retried) KVS writes: commands time out while the device is
-# busy (firmware device lock: writes are dropped without a reply, e.g.
-# during or right after feed streaming), and state changes take a moment
-# to settle.
+# Backoff between busy ('B') retries in set_verified.
 KVS_WRITE_DELAY_S = 0.5
 
 
@@ -85,9 +92,21 @@ class KvsRejected(KvsError):
     last entry."""
 
 
+class KvsBusy(KvsError):
+    """The device answered 'B': locked (ADC feed streaming), the request
+    was not processed."""
+
+
+class KvsDeviceError(KvsError):
+    """The device answered 'E': a storage-layer (NVS) failure on the
+    device. Never a missing key; a mid-iteration error is not
+    end-of-keys."""
+
+
 class KvsTimeout(KvsError, TimeoutError):
-    """No reply within the command timeout — e.g. the device lock silently
-    dropping the write. Also catchable as the builtin TimeoutError."""
+    """No reply within the command timeout. The device answers every
+    request (a busy device answers 'B'), so this means the link is
+    broken. Also catchable as the builtin TimeoutError."""
 
 
 def _check_device_name(value: str) -> None:
@@ -164,25 +183,42 @@ class KvsClient:
         if pending is None:
             return  # stale frame, e.g. arrived after its command timed out
         request, fut = pending
-        # Only the two exact frame shapes are accepted — a prefix check on
-        # the echo would attribute e.g. a late "1GETFabcX=v" to a pending
-        # "GETFabc". Anything else (stale, foreign, or malformed) is
-        # ignored; the outstanding command's own reply or timeout settles
-        # it.
-        head = b"1" + request + b"="
-        if reply[: len(head)] == head:
+        # The echo sits at a fixed position; success answers continue with
+        # '=' and all others end at the echo, so matching is prefix-free
+        # (a late "1GETFabcX=v" does not settle a pending "GETFabc").
+        # Anything not answering the pending command (stale, foreign, or
+        # malformed) is ignored; the command's own reply or timeout
+        # settles it.
+        if reply[1 : 1 + len(request)] != request:
+            return
+        status, rest = reply[:1], reply[1 + len(request) :]
+        if status == b"1" and rest.startswith(b"="):
             self._pending = None
-            fut.set_result(reply[len(head) :])
-        elif reply == b"0" + request:
+            fut.set_result(rest[1:])
+        elif status == b"0" and not rest:
             self._pending = None
             fut.set_exception(KvsRejected(f"Device rejected {request!r}"))
+        elif status == b"B" and not rest:
+            self._pending = None
+            fut.set_exception(KvsBusy(f"Device busy (locked/streaming): {request!r}"))
+        elif status == b"E" and not rest:
+            self._pending = None
+            fut.set_exception(KvsDeviceError(f"Device storage error: {request!r}"))
+        elif status not in (b"0", b"1", b"B", b"E"):
+            # An unknown status byte answering this command is a protocol
+            # break; fail loudly instead of riding out the timeout.
+            self._pending = None
+            fut.set_exception(
+                KvsError(f"Unknown KVS status byte {status!r} in {reply!r}")
+            )
 
     async def _command(self, cmd: bytes, folder: str, data: str = "") -> bytes:
         """Send a command and return the reply payload (after the '=').
 
-        Raises KvsRejected on a '0' reply, KvsTimeout when no matching
-        reply arrives within _COMMAND_TIMEOUT_S (stale, foreign, or
-        malformed frames are ignored — see _on_notify)."""
+        Raises KvsRejected on '0', KvsBusy on 'B', KvsDeviceError on 'E',
+        and KvsTimeout when no matching reply arrives within
+        _COMMAND_TIMEOUT_S (stale, foreign, or malformed frames are
+        ignored — see _on_notify)."""
         request = cmd + folder.encode() + data.encode()
         async with self._lock:
             fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
@@ -230,7 +266,11 @@ class KvsClient:
         await self._command(b"DEL", folder, key)
 
     async def list_entries(self, folder: str) -> list[tuple[str, int]]:
-        """(key, nvs_type) pairs for the whole namespace, via the IDX command."""
+        """(key, nvs_type) pairs for the whole namespace, via the IDX command.
+
+        Iteration ends at the first rejection (IDX past the last entry). A
+        mid-iteration storage error raises KvsDeviceError instead — a
+        truncated listing cannot pass as complete."""
         found = []
         for idx in range(100):  # sanity bound
             try:
@@ -250,14 +290,15 @@ class KvsClient:
     async def set_verified(
         self, folder: str, key: str, value: str, attempts: int = 3
     ) -> str:
-        """SET + read-back verify, with retries (device-lock grace). Returns
-        the readback (compare against `value` to confirm the write);
-        re-raises KvsError after `attempts` failed tries."""
+        """SET + read-back verify. Returns the readback (compare against
+        `value` to confirm the write; a mismatch is returned, not
+        retried). Retries only while the device answers 'B' (busy);
+        rejection, device error, and timeout raise immediately."""
         for attempt in range(attempts):
             try:
                 await self.set(folder, key, value)
                 return await self.get(folder, key)
-            except KvsError:
+            except KvsBusy:
                 if attempt + 1 == attempts:
                     raise
                 await asyncio.sleep(KVS_WRITE_DELAY_S)

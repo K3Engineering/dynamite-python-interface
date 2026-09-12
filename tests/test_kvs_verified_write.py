@@ -2,7 +2,13 @@ import asyncio
 
 import pytest
 
-from dynamite_sampler_kvs import KvsClient, KvsError, KvsTimeout
+from dynamite_sampler_kvs import (
+    KvsBusy,
+    KvsClient,
+    KvsDeviceError,
+    KvsError,
+    KvsTimeout,
+)
 
 
 class FakeClient(KvsClient):
@@ -12,8 +18,8 @@ class FakeClient(KvsClient):
     def __init__(self, fail_sets=0, corrupt_key=None):
         super().__init__(client=None, advertised_name="fake")
         self.store = {}
-        # KvsTimeouts to raise from set() before succeeding — the firmware
-        # device lock's real failure mode (silent drop, no reply).
+        # KvsBusy exceptions to raise from set() before succeeding — the
+        # firmware device lock's answer while the ADC feed streams.
         self.fail_sets = fail_sets
         self.corrupt_key = corrupt_key  # key whose readback never matches
         self.set_calls = 0
@@ -22,7 +28,7 @@ class FakeClient(KvsClient):
         self.set_calls += 1
         if self.fail_sets > 0:
             self.fail_sets -= 1
-            raise KvsTimeout("device locked (no reply)")
+            raise KvsBusy("device locked ('B')")
         stored = "corrupted" if key == self.corrupt_key else value
         self.store[(folder, key)] = stored
 
@@ -53,18 +59,34 @@ def test_set_verified_mismatch_returns_readback():
     assert client.set_calls == 1  # a mismatch is not retried
 
 
-def test_set_verified_retries_transient_error():
+def test_set_verified_retries_busy():
     client = FakeClient(fail_sets=2)
     readback = asyncio.run(client.set_verified("F", "exc", "4.53", attempts=3))
     assert readback == "4.53"
     assert client.set_calls == 3
 
 
-def test_set_verified_reraises_after_retries():
+def test_set_verified_reraises_busy_after_retries():
     client = FakeClient(fail_sets=10)
-    with pytest.raises(KvsError):
+    with pytest.raises(KvsBusy):
         asyncio.run(client.set_verified("F", "exc", "4.53", attempts=2))
     assert client.set_calls == 2
+
+
+@pytest.mark.parametrize("error", [KvsTimeout, KvsDeviceError, KvsError])
+def test_set_verified_does_not_retry_non_busy_errors(error):
+    """Timeout means a broken link and 'E' a device failure; neither is
+    worth a retry (only the busy 'B' is)."""
+    client = FakeClient()
+
+    async def fail(folder, key, value):
+        client.set_calls += 1
+        raise error("nope")
+
+    client.set = fail
+    with pytest.raises(error):
+        asyncio.run(client.set_verified("F", "exc", "4.53", attempts=3))
+    assert client.set_calls == 1
 
 
 def test_set_verified_rejects_zero_attempts():

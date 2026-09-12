@@ -7,7 +7,14 @@ import asyncio
 import pytest
 
 import dynamite_sampler_kvs
-from dynamite_sampler_kvs import KvsClient, KvsError, KvsRejected, KvsTimeout
+from dynamite_sampler_kvs import (
+    KvsBusy,
+    KvsClient,
+    KvsDeviceError,
+    KvsError,
+    KvsRejected,
+    KvsTimeout,
+)
 
 
 class FakeBleakClient:
@@ -17,7 +24,8 @@ class FakeBleakClient:
         self.writes = []
         self.kvs = None
         # responder(kvs, request_bytes) -> reply frame bytes, or None to
-        # answer with nothing (the firmware device-lock silent drop).
+        # answer with nothing (a dead link; the firmware answers every
+        # request — busy ones get 'B').
         self.responder = responder or (lambda kvs, req: b"1" + req + b"=")
 
     async def write_gatt_char(self, _uuid, data, response=True):
@@ -60,6 +68,52 @@ def test_rejection_raises_kvs_rejected():
     async def run():
         with pytest.raises(KvsRejected):
             await kvs.get("F", "nope")
+
+    asyncio.run(run())
+
+
+def test_busy_raises_kvs_busy():
+    """The device lock's answer while the ADC feed streams."""
+    kvs = make_client(responder=lambda kvs, req: b"B" + req)
+
+    async def run():
+        with pytest.raises(KvsBusy):
+            await kvs.set("U", "lc0.cap", "200")
+
+    asyncio.run(run())
+
+
+def test_device_error_raises_kvs_device_error():
+    kvs = make_client(responder=lambda kvs, req: b"E" + req)
+
+    async def run():
+        with pytest.raises(KvsDeviceError):
+            await kvs.get("F", "ch0.raw")
+
+    asyncio.run(run())
+
+
+def test_error_mid_iteration_does_not_pass_as_end_of_keys():
+    """'E' from IDX is a storage failure, not end-of-iteration — a
+    truncated listing must not pass as complete."""
+    answers = iter([b"1IDXF0=ch0.raw=21", b"EIDXF1"])
+    kvs = make_client(responder=lambda kvs, req: next(answers))
+
+    async def run():
+        with pytest.raises(KvsDeviceError):
+            await kvs.list_entries("F")
+
+    asyncio.run(run())
+
+
+def test_unknown_status_byte_fails_loudly():
+    """A status byte this client doesn't know is a protocol break: raise
+    immediately instead of riding out the timeout."""
+    kvs = make_client(responder=lambda kvs, req: b"Z" + req)
+
+    async def run():
+        with pytest.raises(KvsError, match="status byte"):
+            await kvs.get("F", "exc")
 
     asyncio.run(run())
 
