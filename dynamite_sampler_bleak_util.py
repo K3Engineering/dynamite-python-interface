@@ -1,9 +1,10 @@
 import asyncio
 from typing import Iterable, Optional
 
-import dynamite_sampler_api as ds
-
 import bleak
+
+from dynamite_sampler import gatt as ds
+from dynamite_sampler.ssn import SsnUnwrapper
 
 
 class NotifyCallbackRawData:
@@ -48,7 +49,7 @@ async def find_dynamite_samplers() -> (
     """Return a list of devices & advertising that have a Dynamite sampler UUID.
     List is sorted by RSSI"""
     devices_and_adv = await bleak.BleakScanner.discover(
-        return_adv=True, service_uuids=[ds.DynamiteSampler.UUID]
+        return_adv=True, service_uuids=[ds.DynamiteSamplerService.UUID]
     )
 
     return sorted(devices_and_adv.values(), key=lambda t: t[1].rssi, reverse=True)
@@ -106,32 +107,6 @@ async def write_characteristic(
     await client.write_gatt_char(cls.UUID, cls.pack(data), response=response)
 
 
-class SsnUnwrapper:
-    """Unwraps the feed's 16-bit sample sequence number to a linear counter
-    and counts missed samples, handling the 16-bit rollover (e.g. expected
-    65535, got 0). Assumption: connection outages never last a full 16-bit
-    cycle (~65 s)."""
-
-    UINT16_MODULO = 2**16
-
-    def __init__(self):
-        self._expected = None
-
-    def unwrap_and_modify(self, feed_packet) -> int:
-        """Rewrite feed_packet.header.sample_sequence_number to the absolute
-        (unwrapped) value in place; return samples missed since the previous
-        packet. Downstream callbacks can then treat sequence numbers as
-        linear/infinite."""
-        ssn = feed_packet.header.sample_sequence_number
-        if self._expected is None:
-            self._expected = ssn  # initialize on the first packet
-        missed_samples = (ssn - self._expected) % self.UINT16_MODULO
-        unwrapped = self._expected + missed_samples
-        feed_packet.header.sample_sequence_number = unwrapped
-        self._expected = unwrapped + len(feed_packet.samples)
-        return missed_samples
-
-
 # Idle-poll cadence for mid-stream disconnect detection in FeedSession.
 # bleak only reports disconnects through a disconnected_callback passed to
 # the BleakClient constructor, but FeedSession receives an already-connected
@@ -177,7 +152,7 @@ class FeedSession:
             ds.DeviceInfo.FirmwareRevision,
             ds.DeviceInfo.ManufacturerName,
             ds.DeviceInfo.TxPowerLevel,
-            ds.DynamiteSampler.ADCConfig,
+            ds.DynamiteSamplerService.ADCConfig,
         )
         self._device_info = {
             cls.__name__: await read_characteristic(self._client, cls)
@@ -197,7 +172,7 @@ class FeedSession:
             self._queue.put_nowait(data)
 
         await self._client.start_notify(
-            ds.DynamiteSampler.ADCFeed.UUID, notify_callback
+            ds.DynamiteSamplerService.ADCFeed.UUID, notify_callback
         )
         self._pump_task = asyncio.create_task(self._pump())
 
@@ -211,7 +186,7 @@ class FeedSession:
                     print("FeedSession: device disconnected, feed pump stopped")
                     return
                 continue
-            feed_packet = ds.DynamiteSampler.ADCFeed.unpack(raw_data)
+            feed_packet = ds.DynamiteSamplerService.ADCFeed.unpack(raw_data)
             missed_samples = unwrapper.unwrap_and_modify(feed_packet)
 
             for cbr in self._callbacks_raw:
@@ -236,7 +211,7 @@ class FeedSession:
             self._pump_task = None
         if self._client.is_connected:
             try:
-                await self._client.stop_notify(ds.DynamiteSampler.ADCFeed.UUID)
+                await self._client.stop_notify(ds.DynamiteSamplerService.ADCFeed.UUID)
             except Exception:
                 pass  # never subscribed, or the backend already tore it down
         for cb in (*self._callbacks_raw, *self._callbacks_feeddata):
