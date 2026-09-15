@@ -1,10 +1,10 @@
 """Dynamite Sampler Python API.
 
-    import dynamite_sampler as dms
+import dynamite_sampler as dms
 
-    with dms.connect() as dev:
-        block = dev.read(n=1000, units="mV/V", timeout=5.0)
-        print(block.data.shape)
+with dms.connect() as dev:
+    block = dev.read(n=1000, units="mV/V", timeout=5.0)
+    print(block.data.shape)
 """
 
 import asyncio

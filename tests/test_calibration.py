@@ -192,7 +192,9 @@ def test_partial_constants_raise():
 
 
 def test_calibration_keys_without_constants_raise():
-    factory = {k: v for k, v in FACTORY.items() if k not in ("adc_fsr", "exc", "afe_gain")}
+    factory = {
+        k: v for k, v in FACTORY.items() if k not in ("adc_fsr", "exc", "afe_gain")
+    }
     with pytest.raises(CalibrationError):
         Calibration.from_kvs({"F": factory, "U": {}}, PGA)
 
@@ -205,7 +207,5 @@ def test_invalid_channel_data_raises():
 
 
 def test_malformed_load_cell_slot_reads_empty():
-    cal = Calibration.from_kvs(
-        {"F": FACTORY, "U": {"lc0.cap": "100"}}, PGA
-    )
+    cal = Calibration.from_kvs({"F": FACTORY, "U": {"lc0.cap": "100"}}, PGA)
     assert cal.load_cells[0] is None

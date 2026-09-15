@@ -91,9 +91,7 @@ def _channel_data_valid(resistors, readings):
         return False
     if any(not np.isfinite(r) or r <= 0 for r in resistors):
         return False
-    if any(
-        not np.isfinite(v) or v >= (1 << 23) or v < -(1 << 23) for v in readings
-    ):
+    if any(not np.isfinite(v) or v >= (1 << 23) or v < -(1 << 23) for v in readings):
         return False
     ordered = sorted(readings)
     return all(b - a >= 1000 for a, b in zip(ordered, ordered[1:]))
@@ -286,9 +284,7 @@ class Calibration:
         n_channels = len(pga_gains) if pga_gains else ADC_CHANNEL_COUNT
 
         constants_present = any(k in factory for k in BOARD_CONSTANT_KEYS)
-        cal_keys_present = any(
-            k in factory for k in _cal_group_key_names(n_channels)
-        )
+        cal_keys_present = any(k in factory for k in _cal_group_key_names(n_channels))
 
         if not constants_present:
             if cal_keys_present:
@@ -307,9 +303,7 @@ class Calibration:
                     raise CalibrationError(
                         "calibration keys without the cal.date marker (torn write)"
                     )
-                channels = [
-                    ChannelBoard(nominals, i) for i in range(n_channels)
-                ]
+                channels = [ChannelBoard(nominals, i) for i in range(n_channels)]
             else:
                 if (
                     pga_gains is not None
@@ -396,7 +390,7 @@ class Calibration:
         for i, channel in enumerate(self._channels):
             tare = None if tare_raw is None else np.asarray(tare_raw)[i]
             tare_mvv = 0.0 if tare is None else channel.mvv(tare)
-            out[..., i] = (
-                channel.mvv(raw[..., i]) - tare_mvv
-            ) * self._scale_per_mvv(i, units)
+            out[..., i] = (channel.mvv(raw[..., i]) - tare_mvv) * self._scale_per_mvv(
+                i, units
+            )
         return out

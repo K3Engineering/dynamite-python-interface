@@ -96,7 +96,9 @@ class DynamiteSamplerService(BLEService):
         def split(cls, b: bytearray | bytes) -> tuple[int, bytes]:
             """(ssn, sample payload). The payload is a whole number of samples."""
             if len(b) < cls.HEADER_BYTES:
-                raise ProtocolError(f"ADC feed frame shorter than its header: {len(b)} B")
+                raise ProtocolError(
+                    f"ADC feed frame shorter than its header: {len(b)} B"
+                )
             payload = bytes(b[cls.HEADER_BYTES :])
             if len(payload) % cls.SAMPLE_BYTES != 0:
                 raise ProtocolError(
