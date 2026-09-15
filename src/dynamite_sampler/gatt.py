@@ -7,7 +7,6 @@ bytes, signed little-endian).
 """
 
 import dataclasses
-import struct
 from typing import ClassVar, Generic, TypeVar
 
 from . import ads131m04
@@ -90,21 +89,21 @@ class DynamiteSamplerService(BLEService):
 
         UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-        _HEADER_BYTES: ClassVar[int] = 2
-        _SAMPLE_BYTES: ClassVar[int] = 12
+        HEADER_BYTES: ClassVar[int] = 2
+        SAMPLE_BYTES: ClassVar[int] = 12
 
         @classmethod
         def split(cls, b: bytearray | bytes) -> tuple[int, bytes]:
             """(ssn, sample payload). The payload is a whole number of samples."""
-            if len(b) < cls._HEADER_BYTES:
+            if len(b) < cls.HEADER_BYTES:
                 raise ProtocolError(f"ADC feed frame shorter than its header: {len(b)} B")
-            payload = bytes(b[cls._HEADER_BYTES :])
-            if len(payload) % cls._SAMPLE_BYTES != 0:
+            payload = bytes(b[cls.HEADER_BYTES :])
+            if len(payload) % cls.SAMPLE_BYTES != 0:
                 raise ProtocolError(
                     f"ADC feed payload {len(payload)} B is not a whole number of "
-                    f"{cls._SAMPLE_BYTES} B samples"
+                    f"{cls.SAMPLE_BYTES} B samples"
                 )
-            ssn = int.from_bytes(b[0 : cls._HEADER_BYTES], "little")
+            ssn = int.from_bytes(b[0 : cls.HEADER_BYTES], "little")
             return ssn, payload
 
         @classmethod
@@ -112,11 +111,8 @@ class DynamiteSamplerService(BLEService):
             """Per-sample dataclass parse (slow path; the device decodes arrays)."""
             ssn, payload = cls.split(b)
             samples = []
-            for start in range(0, len(payload), cls._SAMPLE_BYTES):
-                chunk = payload[start : start + cls._SAMPLE_BYTES]
-                ch0, ch1, ch2, ch3 = struct.unpack("<iii", chunk[:12])
-                # 3-byte fields: unpack as 4 bytes then shift would misread;
-                # decode each explicitly.
+            for start in range(0, len(payload), cls.SAMPLE_BYTES):
+                chunk = payload[start : start + cls.SAMPLE_BYTES]
                 samples.append(
                     FeedData(
                         *(

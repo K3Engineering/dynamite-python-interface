@@ -3,7 +3,9 @@
 import asyncio
 
 import numpy as np
+import pytest
 
+import dynamite_sampler.discovery as discovery
 from dynamite_sampler.device import AsyncDynamiteSampler, _decode_samples
 from dynamite_sampler.gatt import ADCConfigData
 from dynamite_sampler.ssn import SsnUnwrapper
@@ -93,3 +95,23 @@ def test_stream_converts_units():
     block = asyncio.run(run())
     assert np.array_equal(block.data, block.raw)
     assert block.units == "raw"
+
+
+def test_find_single_accepts_found_device(monkeypatch):
+    device = discovery.FoundDevice("D4:5E:AA:BB:CC:DD", "ds", -50)
+
+    async def fake_discover(timeout=0):
+        return [device]
+
+    monkeypatch.setattr(discovery, "discover", fake_discover)
+    assert asyncio.run(discovery.find_single(device)) is device
+    assert asyncio.run(discovery.find_single("d4:5e:aa:bb:cc:dd")) is device
+
+
+def test_find_single_rejects_other_types(monkeypatch):
+    async def fake_discover(timeout=0):
+        return []
+
+    monkeypatch.setattr(discovery, "discover", fake_discover)
+    with pytest.raises(TypeError):
+        asyncio.run(discovery.find_single(42))

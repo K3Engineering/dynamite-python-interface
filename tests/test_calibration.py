@@ -161,6 +161,29 @@ def test_torn_group_without_date_raises():
         Calibration.from_kvs({"F": bad, "U": {}}, PGA)
 
 
+def test_constants_without_adc_config_parse_raw_only():
+    # An UNCONFIGURED board mid-provisioning: constants are present but the
+    # ADC config is unreadable. That is a state, not corrupt data.
+    factory = {k: v for k, v in FACTORY.items() if not k.startswith(("ch", "cal."))}
+    cal = Calibration.from_kvs({"F": factory, "U": {}}, None)
+    assert not cal.is_calibrated
+    raw = np.arange(8, dtype=float).reshape(2, 4)
+    assert np.array_equal(cal.convert(raw, "raw"), raw)
+    with pytest.raises(UnitUnavailable, match="PGA"):
+        cal.check_units("mV/V")
+
+
+def test_calibrated_without_adc_config_converts_mvv():
+    # The piecewise map is not a conversion input on PGA gains, so a
+    # calibrated board converts without the ADC config; the cal.adc
+    # staleness check is skipped (nothing to compare against).
+    cal = Calibration.from_kvs(SNAPSHOT, None)
+    assert cal.is_calibrated
+    sp = ladder_setpoints_mv_per_v(RESISTOR_VALUES)
+    out = cal.convert(np.array([READING_VALUES[0]] * 4), "mV/V")
+    assert out[0] == pytest.approx(sp[0], rel=1e-9)
+
+
 def test_partial_constants_raise():
     bad = dict(FACTORY)
     del bad["exc"]

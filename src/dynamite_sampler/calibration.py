@@ -119,6 +119,8 @@ class BoardNominals:
     provenance: dict
 
     def counts_per_mvv(self, channel):
+        if self.pga_gains is None:
+            return None  # no ADC config (UNCONFIGURED board): nominal map unusable
         return expected_counts_per_mvv(
             self.adc_fsr_v, self.afe_gain, self.pga_gains[channel], self.excitation_v
         )
@@ -150,6 +152,11 @@ class ChannelBoard:
         """Absolute raw counts -> mV/V (extrapolating along the outer segments)."""
         raw = np.asarray(raw, dtype=np.float64)
         if self._readings is None:
+            if self._counts_per_mvv is None:
+                raise UnitUnavailable(
+                    "nominal conversion needs the runtime PGA gains, but this "
+                    "board has no ADC config (UNCONFIGURED)"
+                )
             return raw / self._counts_per_mvv
         xs = self._sorted_raw
         ys = self._sorted_setpoints
@@ -175,6 +182,8 @@ class _CalGroup:
 
 
 def _resolve_nominals(factory, pga_gains):
+    """The board's analog constants. ``pga_gains`` may be None (UNCONFIGURED
+    board): the constants still parse; the nominal map just can't convert."""
     missing = [k for k in BOARD_CONSTANT_KEYS if k not in factory]
     if missing:
         raise CalibrationError(f"board constants: missing {', '.join(missing)}")
@@ -193,7 +202,7 @@ def _resolve_nominals(factory, pga_gains):
         adc_fsr_v=values["adc_fsr"],
         afe_gain=values["afe_gain"],
         excitation_v=values["exc"],
-        pga_gains=list(pga_gains),
+        pga_gains=None if pga_gains is None else list(pga_gains),
         provenance=provenance,
     )
 
@@ -265,7 +274,10 @@ class Calibration:
     def from_kvs(cls, snapshot, pga_gains):
         """Parse a raw KVS snapshot (``{"F": {...}, "U": {...}}``).
 
-        Raises :class:`CalibrationError` on present-but-unusable board data."""
+        ``pga_gains`` may be None (UNCONFIGURED board with no ADC config);
+        the nominal map then can't convert, failing at ``check_units``/
+        ``convert`` instead of here. Raises :class:`CalibrationError` only
+        on data that is present and wrong."""
         factory = dict(snapshot.get("F", {}))
         user = dict(snapshot.get("U", {}))
         n_channels = len(pga_gains) if pga_gains else ADC_CHANNEL_COUNT
@@ -285,10 +297,6 @@ class Calibration:
             group = None
             nominals = None
         else:
-            if pga_gains is None:
-                raise CalibrationError(
-                    "board constants present but the ADC config is unreadable"
-                )
             nominals = _resolve_nominals(factory, pga_gains)
             group = _parse_cal_group(factory, n_channels)
             if group is None:
@@ -300,7 +308,11 @@ class Calibration:
                     ChannelBoard(nominals, i) for i in range(n_channels)
                 ]
             else:
-                if group.adc_gains is not None and group.adc_gains != list(pga_gains):
+                if (
+                    pga_gains is not None
+                    and group.adc_gains is not None
+                    and group.adc_gains != list(pga_gains)
+                ):
                     raise CalibrationError(
                         f"stale calibration: cal.adc {group.adc_gains} != "
                         f"runtime PGA {list(pga_gains)}"
@@ -362,6 +374,11 @@ class Calibration:
             raise UnitUnavailable(
                 f"unit {units!r} needs the board's analog constants; only 'raw' "
                 "converts on this device"
+            )
+        if not self.is_calibrated and self.nominals.pga_gains is None:
+            raise UnitUnavailable(
+                f"unit {units!r} needs the runtime PGA gains, but this board has "
+                "no ADC config (UNCONFIGURED); only 'raw' converts on this device"
             )
         if units in FORCE_FACTORS:
             for i, load_cell in enumerate(self.load_cells):

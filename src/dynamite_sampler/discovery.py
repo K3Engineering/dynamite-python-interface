@@ -38,10 +38,17 @@ async def discover(timeout=DEFAULT_DISCOVER_TIMEOUT_S):
 async def find_single(address=None):
     """The one device in range (or the one matching ``address``).
 
+    ``address`` may be an address string or a :class:`FoundDevice`.
     Raises ``DeviceNotFound``/``MultipleDevicesFound``; never prompts."""
+    if isinstance(address, FoundDevice):
+        address = address.address
+    elif address is not None and not isinstance(address, str):
+        raise TypeError(
+            f"address must be a string or FoundDevice, got {type(address).__name__}"
+        )
     devices = await discover()
     if address is not None:
-        wanted = str(address).upper()
+        wanted = address.upper()
         matches = [d for d in devices if d.address.upper() == wanted]
         if not matches:
             raise DeviceNotFound(f"No Dynamite Sampler with address {address} found")

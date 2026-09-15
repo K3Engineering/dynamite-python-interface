@@ -267,7 +267,14 @@ class KvsNamespace:
 
 
 class Kvs:
-    """The device's KVS: a frozen raw snapshot plus per-namespace handles."""
+    """The device's KVS: a verbatim raw snapshot plus per-namespace handles.
+
+    NOTE: the design notes call the snapshot "frozen"; deliberately it is
+    not. ``set``/``delete`` update it in place after each verified write
+    (with the read-back values the device just confirmed) rather than
+    re-reading three namespaces over BLE. Treat it as read-only; the
+    device's ``Calibration`` rebuilds from a copy on every change.
+    """
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):
         self._client = KvsClient(client, advertised_name)
