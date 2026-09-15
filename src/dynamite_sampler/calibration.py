@@ -6,6 +6,7 @@ through it. The pipeline is normative in ``docs/csv-format-v2.md``.
 """
 
 import dataclasses
+from typing import Literal, Mapping
 
 import numpy as np
 
@@ -43,6 +44,9 @@ FORCE_FACTORS = {
     "lbf": 2.20462,
 }
 UNITS = ("raw", "mV/V", "mV", *FORCE_FACTORS)
+
+# The keyword values accepted by Calibration.convert / stream / read.
+Unit = Literal["raw", "mV/V", "mV", "kgf", "N", "kN", "lbf"]
 
 
 def _cal_group_key_names(n_channels):
@@ -131,46 +135,43 @@ class ChannelBoard:
 
     def __init__(self, nominals, channel, resistors=None, readings=None):
         self._counts_per_mvv = nominals.counts_per_mvv(channel)
-        self._readings = readings
-        self._setpoints = None
+        self._xs = None
+        self._ys = None
         if readings is not None:
-            self._setpoints = ladder_setpoints_mv_per_v(resistors)
+            self.setpoints = ladder_setpoints_mv_per_v(resistors)
             order = sorted(range(CAL_POINT_COUNT), key=readings.__getitem__)
-            self._sorted_raw = [readings[k] for k in order]
-            self._sorted_setpoints = [self._setpoints[k] for k in order]
+            self._xs = np.array([readings[k] for k in order], dtype=np.float64)
+            self._ys = np.array([self.setpoints[k] for k in order], dtype=np.float64)
             self.resistors = list(resistors)
             self.readings = list(readings)
-            self.sensitivity_counts_per_mvv = (readings[0] - readings[4]) / (
-                self._setpoints[0] - self._setpoints[4]
-            )
 
     @property
     def is_calibrated(self):
-        return self._readings is not None
+        return self._xs is not None
 
     def mvv(self, raw):
-        """Absolute raw counts -> mV/V (extrapolating along the outer segments)."""
+        """Absolute raw counts -> mV/V (extrapolating along the outer segments).
+
+        ``np.interp`` clamps at the ends; this does not, so the outer segments
+        extrapolate as the pipeline requires."""
         raw = np.asarray(raw, dtype=np.float64)
-        if self._readings is None:
+        if self._xs is None:
             if self._counts_per_mvv is None:
                 raise UnitUnavailable(
                     "nominal conversion needs the runtime PGA gains, but this "
                     "board has no ADC config (UNCONFIGURED)"
                 )
             return raw / self._counts_per_mvv
-        xs = self._sorted_raw
-        ys = self._sorted_setpoints
-        idx = np.searchsorted(xs, raw, side="left")
-        idx = np.clip(idx, 1, len(xs) - 1)
-        x0 = np.asarray(xs)[idx - 1]
-        x1 = np.asarray(xs)[idx]
-        y0 = np.asarray(ys)[idx - 1]
-        y1 = np.asarray(ys)[idx]
+        idx = np.clip(np.searchsorted(self._xs, raw, side="left"), 1, len(self._xs) - 1)
+        x0, x1 = self._xs[idx - 1], self._xs[idx]
+        y0, y1 = self._ys[idx - 1], self._ys[idx]
         return y0 + (raw - x0) * (y1 - y0) / (x1 - x0)
 
 
-@dataclasses.dataclass
-class _CalGroup:
+@dataclasses.dataclass(frozen=True)
+class CalGroup:
+    """The parsed calibration group: metadata plus per-channel ladder data."""
+
     date: str
     board_id: str | None
     tool: str | None
@@ -230,7 +231,7 @@ def _parse_cal_group(factory, n_channels):
     if saw_absent or not saw_present:
         raise CalibrationError("calibration: only some channels calibrated")
     temps = _parse_number_list(factory.get("cal.temp"), 2, "cal.temp")
-    return _CalGroup(
+    return CalGroup(
         date=date,
         board_id=factory.get("cal.board"),
         tool=factory.get("cal.tool"),
@@ -271,7 +272,9 @@ class Calibration:
         self._group = group
 
     @classmethod
-    def from_kvs(cls, snapshot, pga_gains):
+    def from_kvs(
+        cls, snapshot: Mapping[str, Mapping[str, str]], pga_gains: list[int] | None
+    ) -> "Calibration":
         """Parse a raw KVS snapshot (``{"F": {...}, "U": {...}}``).
 
         ``pga_gains`` may be None (UNCONFIGURED board with no ADC config);
@@ -337,34 +340,16 @@ class Calibration:
         return self._channels
 
     @property
-    def cal_date(self):
-        return None if self._group is None else self._group.date
-
-    @property
-    def board_id(self):
-        return None if self._group is None else self._group.board_id
-
-    @property
-    def tool(self):
-        return None if self._group is None else self._group.tool
-
-    @property
-    def origin(self):
-        return None if self._group is None else self._group.origin
-
-    @property
-    def temps_c(self):
-        return None if self._group is None else self._group.temps_c
-
-    @property
-    def adc_gains(self):
-        return None if self._group is None else self._group.adc_gains
+    def group(self) -> "CalGroup | None":
+        """The parsed calibration group (metadata, resistors, readings), or
+        ``None`` when the board carries only nominal constants."""
+        return self._group
 
     @property
     def is_calibrated(self):
         return self._group is not None
 
-    def check_units(self, units):
+    def check_units(self, units: str) -> None:
         """Raise :class:`UnitUnavailable` if ``units`` can't convert everywhere."""
         if units not in UNITS:
             raise ValueError(f"unknown unit {units!r}; choose one of {UNITS}")
@@ -394,7 +379,7 @@ class Calibration:
             return self.nominals.excitation_v
         return FORCE_FACTORS[units] * self.load_cells[channel].kgf_per_mv_v
 
-    def convert(self, raw, units, tare_raw=None):
+    def convert(self, raw, units: str, tare_raw=None) -> np.ndarray:
         """Convert absolute raw counts to ``units``, net of ``tare_raw``.
 
         ``raw`` has channels on its last axis. With ``units='raw'`` the result

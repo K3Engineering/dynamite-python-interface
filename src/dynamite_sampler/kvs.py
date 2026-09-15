@@ -22,6 +22,7 @@ concurrent access fails fast with KvsBusy instead of hanging.
 
 import asyncio
 import re
+from types import MappingProxyType
 
 import bleak
 
@@ -67,6 +68,10 @@ MAX_VAL_LEN = 128  # firmware: USER_KVS_MAX_VAL_LEN
 # Settings namespace keys (value grammar: docs/flash-schema-v2.md).
 KEY_DEVICE_NAME = "device_name"
 
+# device_name grammar (docs/flash-schema-v2.md): ASCII, 1-29 chars, first
+# char alphanumeric, no outer whitespace. Enforced client-side on every
+# write — the firmware transport does not validate, and the firmware that
+# will apply this value to the GAP identity must not depend on writers.
 _DEVICE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()'-]{0,28}$")
 
 _COMMAND_TIMEOUT_S = 5.0
@@ -94,7 +99,13 @@ class KvsClient:
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):
         self.client = client
+        # The BLE advertisement name the device was found under, NOT the
+        # user-assigned Settings name (see get_device_name).
         self.advertised_name = advertised_name
+        # Commands are strictly serialized (the firmware answers one write
+        # at a time anyway, and out-of-order replies need exact-echo
+        # matching to be attributable at all). _pending is the single
+        # outstanding (request, future); see _on_notify.
         self._lock = asyncio.Lock()
         self._pending = None
 
@@ -104,13 +115,32 @@ class KvsClient:
         client = bleak.BleakClient(device.address)
         await client.connect()
         kvs = cls(client, device.name or "?")
-        await client.start_notify(KVS_CHR_UUID, kvs._on_notify)
+        await kvs.start()
         return kvs
 
-    async def disconnect(self) -> None:
+    async def start(self) -> None:
+        """Subscribe to the KVS notification characteristic."""
+        await self.client.start_notify(KVS_CHR_UUID, self._on_notify)
+
+    async def stop(self) -> None:
+        """Unsubscribe from the KVS notification characteristic."""
         if self.client.is_connected:
             await self.client.stop_notify(KVS_CHR_UUID)
+
+    async def disconnect(self) -> None:
+        await self.stop()
+        if self.client.is_connected:
             await self.client.disconnect()
+
+    def fail_pending(self, exc: Exception) -> None:
+        """Settle an in-flight command with ``exc`` (called on link loss)."""
+        pending = self._pending
+        if pending is None:
+            return
+        self._pending = None
+        _, fut = pending
+        if not fut.done():
+            fut.set_exception(exc)
 
     async def __aenter__(self) -> "KvsClient":
         return self
@@ -125,7 +155,11 @@ class KvsClient:
             return  # stale frame, e.g. arrived after its command timed out
         request, fut = pending
         # The echo sits at a fixed position; success answers continue with
-        # '=' and all others end at the echo, so matching is prefix-free.
+        # '=' and all others end at the echo, so matching is prefix-free
+        # (a late "1GETFabcX=v" does not settle a pending "GETFabc").
+        # Anything not answering the pending command (stale, foreign, or
+        # malformed) is ignored; the command's own reply or timeout
+        # settles it.
         if reply[1 : 1 + len(request)] != request:
             return
         status, rest = reply[:1], reply[1 + len(request) :]
@@ -142,12 +176,20 @@ class KvsClient:
             self._pending = None
             fut.set_exception(KvsDeviceError(f"Device storage error: {request!r}"))
         elif status not in (b"0", b"1", b"B", b"E"):
+            # An unknown status byte answering this command is a protocol
+            # break; fail loudly instead of riding out the timeout.
             self._pending = None
             fut.set_exception(
                 KvsError(f"Unknown KVS status byte {status!r} in {reply!r}")
             )
 
     async def _command(self, cmd: bytes, folder: str, data: str = "") -> bytes:
+        """Send a command and return the reply payload (after the '=').
+
+        Raises KvsRejected on '0', KvsBusy on 'B', KvsDeviceError on 'E',
+        and KvsTimeout when no matching reply arrives within
+        _COMMAND_TIMEOUT_S (stale, foreign, or malformed frames are
+        ignored — see _on_notify)."""
         request = cmd + folder.encode() + data.encode()
         async with self._lock:
             fut = asyncio.get_running_loop().create_future()
@@ -181,6 +223,10 @@ class KvsClient:
         return payload.decode()
 
     async def get_device_name(self) -> str | None:
+        """The user-assigned device name (Settings namespace), or None when
+        unset — the device then goes by its advertised name. Value grammar:
+        docs/flash-schema-v2.md. A missing key is the rejection case here;
+        transport and framing failures raise."""
         try:
             return await self.get(FOLDER_SETTINGS, KEY_DEVICE_NAME)
         except KvsRejected:
@@ -194,7 +240,8 @@ class KvsClient:
         """(key, nvs_type) pairs for the whole namespace, via the IDX command.
 
         Iteration ends at the first rejection (IDX past the last entry). A
-        mid-iteration storage error raises KvsDeviceError instead."""
+        mid-iteration storage error raises KvsDeviceError instead — a
+        truncated listing cannot pass as complete."""
         found = []
         for idx in range(100):  # sanity bound
             try:
@@ -202,20 +249,22 @@ class KvsClient:
                     await self._command(b"IDX", folder, format(idx, "x"))
                 ).decode()
             except KvsRejected:
-                break
-            key, _, type_hex = payload.partition("=")
+                break  # IDX past the last key is rejected by the device
+            key, _, type_hex = payload.partition("=")  # "<key>=<nvs type, hex>"
             found.append((key, int(type_hex, 16)))
         return found
 
     async def keys(self, folder: str) -> list[str]:
+        """All keys in the namespace."""
         return [key for key, _ in await self.list_entries(folder)]
 
     async def set_verified(
         self, folder: str, key: str, value: str, attempts: int = 3
     ) -> str:
         """SET + read-back verify. Returns the readback (compare against
-        ``value``; a mismatch is returned, not retried). Retries only while
-        the device answers 'B' (busy)."""
+        `value` to confirm the write; a mismatch is returned, not
+        retried). Retries only while the device answers 'B' (busy);
+        rejection, device error, and timeout raise immediately."""
         for attempt in range(attempts):
             try:
                 await self.set(folder, key, value)
@@ -256,40 +305,55 @@ class KvsNamespace:
                 f"read-back mismatch for {self._folder}:{key}: "
                 f"{readback!r} != {value!r}"
             )
-        self._kvs.snapshot.setdefault(self._folder, {})[key] = readback
+        self._kvs._namespaces.setdefault(self._folder, {})[key] = readback
         self._kvs._changed()
         return readback
 
     async def delete(self, key: str) -> None:
         await self._kvs._client.delete(self._folder, key)
-        self._kvs.snapshot.get(self._folder, {}).pop(key, None)
+        self._kvs._namespaces.get(self._folder, {}).pop(key, None)
         self._kvs._changed()
 
 
 class Kvs:
-    """The device's KVS: a verbatim raw snapshot plus per-namespace handles.
+    """The device's KVS: a read-only raw snapshot plus per-namespace handles.
 
-    NOTE: the design notes call the snapshot "frozen"; deliberately it is
-    not. ``set``/``delete`` update it in place after each verified write
-    (with the read-back values the device just confirmed) rather than
-    re-reading three namespaces over BLE. Treat it as read-only; the
-    device's ``Calibration`` rebuilds from a copy on every change.
+    ``set``/``delete`` update the snapshot in place after each verified
+    write (with the read-back values the device just confirmed) rather than
+    re-reading three namespaces over BLE, so ``snapshot`` is a live,
+    read-only view: an indexable ``{folder: {key: raw_string}}`` mapping.
+    The device's ``Calibration`` rebuilds from a copy on every change.
     """
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):
         self._client = KvsClient(client, advertised_name)
         self._on_change = None
-        self.snapshot = {}
+        self._namespaces = {}
         self.factory = KvsNamespace(self, FOLDER_FACTORY)
         self.user = KvsNamespace(self, FOLDER_USER)
         self.settings = KvsNamespace(self, FOLDER_SETTINGS)
 
+    @property
+    def snapshot(self):
+        """Read-only view of ``{folder: {key: raw_string}}`` (live)."""
+        return MappingProxyType(
+            {folder: MappingProxyType(ns) for folder, ns in self._namespaces.items()}
+        )
+
     @classmethod
     async def open(cls, client: bleak.BleakClient, advertised_name: str) -> "Kvs":
         kvs = cls(client, advertised_name)
-        await client.start_notify(KVS_CHR_UUID, kvs._client._on_notify)
+        await kvs._client.start()
         await kvs.refresh()
         return kvs
+
+    async def close(self) -> None:
+        """Stop KVS notifications (does not disconnect the client)."""
+        await self._client.stop()
+
+    def fail_pending(self, exc: Exception) -> None:
+        """Settle an in-flight command with ``exc`` (called on link loss)."""
+        self._client.fail_pending(exc)
 
     def set_on_change(self, callback):
         self._on_change = callback
@@ -300,12 +364,12 @@ class Kvs:
 
     async def refresh(self) -> None:
         """Re-read every string key of every namespace into the snapshot."""
-        snapshot = {}
+        namespaces = {}
         for folder in (FOLDER_FACTORY, FOLDER_USER, FOLDER_SETTINGS):
             entries = await self._client.list_entries(folder)
-            snapshot[folder] = {
+            namespaces[folder] = {
                 key: await self._client.get(folder, key)
                 for key, nvs_type in entries
                 if nvs_type == NVS_TYPE_STR
             }
-        self.snapshot = snapshot
+        self._namespaces = namespaces

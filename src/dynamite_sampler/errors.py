@@ -27,6 +27,19 @@ class BufferOverrun(DynamiteError):
     """The consumer is slower than the feed and the internal queue filled."""
 
 
+class StreamActive(DynamiteError):
+    """A ``stream()``/``read()``/``tare()`` is already active on this device.
+
+    Notifications are started on entry and stopped on exit, so only one feed
+    consumer may run at a time."""
+
+
+class TareError(DynamiteError):
+    """Tare failed: a channel had no valid (non-NaN) samples in the window.
+
+    ``tare_raw`` is left untouched when this is raised."""
+
+
 class UnitUnavailable(DynamiteError):
     """The requested unit cannot be produced on every channel.
 

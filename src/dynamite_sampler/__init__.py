@@ -34,6 +34,8 @@ from .errors import (
     ProtocolError,
     ProvisioningError,
     ReadTimeout,
+    StreamActive,
+    TareError,
     UnitUnavailable,
 )
 
@@ -56,6 +58,8 @@ __all__ = [
     "ConnectionLost",
     "ReadTimeout",
     "BufferOverrun",
+    "StreamActive",
+    "TareError",
     "UnitUnavailable",
     "ProtocolError",
     "ProvisioningError",
@@ -68,11 +72,11 @@ __all__ = [
 ]
 
 
-def discover(timeout=5.0):
+def discover(timeout: float = 5.0) -> list[FoundDevice]:
     """All Dynamite Samplers in range, sorted by RSSI descending."""
     return asyncio.run(_discovery.discover(timeout))
 
 
-def connect(address=None):
+def connect(address: str | FoundDevice | None = None) -> DynamiteSampler:
     """Connect to the one device in range (or the one at ``address``)."""
     return DynamiteSampler.connect(address)

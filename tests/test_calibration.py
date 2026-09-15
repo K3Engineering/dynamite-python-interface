@@ -56,8 +56,8 @@ def calibrated():
 def test_calibrated_state_and_metadata():
     cal = calibrated()
     assert cal.is_calibrated
-    assert cal.cal_date == "2026-06-14"
-    assert cal.board_id == "CB42 v1.0.3"
+    assert cal.group.date == "2026-06-14"
+    assert cal.group.board_id == "CB42 v1.0.3"
     assert all(ch.is_calibrated for ch in cal.board)
     assert cal.load_cells[0].capacity_kg == 100.0
     assert cal.load_cells[0].sensitivity_mv_v == 2.007
@@ -67,7 +67,7 @@ def test_setpoints_from_resistors():
     cal = calibrated()
     expected = ladder_setpoints_mv_per_v(RESISTOR_VALUES)
     for ch in cal.board:
-        assert ch._setpoints == pytest.approx(expected)
+        assert ch.setpoints == pytest.approx(expected)
 
 
 def test_mvv_interpolates_through_cal_points():

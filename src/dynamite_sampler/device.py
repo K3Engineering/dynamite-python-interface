@@ -1,6 +1,7 @@
 """The Dynamite Sampler device classes."""
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import threading
 import time
@@ -13,24 +14,30 @@ from .calibration import Calibration
 from .discovery import find_single
 from .errors import (
     BufferOverrun,
+    CalibrationError,
     ConnectionLost,
     DynamiteError,
     ProtocolError,
     ProvisioningError,
     ReadTimeout,
+    StreamActive,
+    TareError,
 )
-from .gatt import DeviceInfo as DeviceInfoChar, DynamiteSamplerService
-from .kvs import KVS_CHR_UUID, Kvs
+from .gatt import DeviceInformation, DynamiteSamplerService
+from .kvs import Kvs
 from .ssn import SsnUnwrapper
 
 ADCConfig = DynamiteSamplerService.ADCConfig
 
 UNCONFIGURED = "UNCONFIGURED"
 
-DISCONNECT_POLL_S = 1.0
 QUEUE_SECONDS = 4
 DEFAULT_BLOCKSIZE = 100
 DEFAULT_READ_TIMEOUT_S = 5.0
+
+# Poll granularity of the sync facade's wait, so Ctrl+C lands promptly on
+# Windows (concurrent.futures ``Future.result()`` is not interruptible).
+_RUN_POLL_S = 0.25
 
 _SAMPLE_BYTES = DynamiteSamplerService.ADCFeed.SAMPLE_BYTES
 _CHANNELS_PER_SAMPLE = _SAMPLE_BYTES // 3
@@ -65,7 +72,7 @@ def _decode_samples(payload, num_channels):
 class AsyncDynamiteSampler:
     """Async device: connect, stream, read, tare, and KVS access."""
 
-    def __init__(self, client, info, adc_config, kvs):
+    def __init__(self, client, info, adc_config, kvs, disconnected=None):
         self._client = client
         self.info = info
         self._adc_config = adc_config
@@ -73,6 +80,12 @@ class AsyncDynamiteSampler:
         self._pga_gains = None if adc_config is None else list(adc_config.gains)
         self.tare_raw = None
         self._active = False
+        self._disconnected = (
+            disconnected if disconnected is not None else asyncio.Event()
+        )
+        self._calibration_error = None
+        # The initial parse raises CalibrationError (present and wrong
+        # fails connect). A later rebuild failure is deferred to stream/read.
         self.calibration = Calibration.from_kvs(kvs.snapshot, self._pga_gains)
         kvs.set_on_change(self._rebuild_calibration)
 
@@ -80,16 +93,27 @@ class AsyncDynamiteSampler:
     async def connect(cls, address=None):
         """Connect to the one device in range (or the one at ``address``)."""
         found = await find_single(address)
-        client = bleak.BleakClient(found.address)
+        disconnected = asyncio.Event()
+        state = {"kvs": None}
+
+        def on_disconnect(_client):
+            disconnected.set()
+            kvs = state["kvs"]
+            if kvs is not None:
+                kvs.fail_pending(ConnectionLost("device disconnected"))
+
+        client = bleak.BleakClient(found.address, disconnected_callback=on_disconnect)
         await client.connect()
         try:
             board_model = (
-                await _read_characteristic(client, DeviceInfoChar.HardwareRevision)
+                await _read_characteristic(client, DeviceInformation.HardwareRevision)
                 or UNCONFIGURED
             )
-            firmware = await _read_characteristic(client, DeviceInfoChar.FirmwareRevision)
+            firmware = await _read_characteristic(
+                client, DeviceInformation.FirmwareRevision
+            )
             manufacturer = await _read_characteristic(
-                client, DeviceInfoChar.ManufacturerName
+                client, DeviceInformation.ManufacturerName
             )
             info = DeviceInfo(
                 found.address, found.name, board_model, firmware, manufacturer
@@ -100,7 +124,8 @@ class AsyncDynamiteSampler:
                 if adc_config is None:
                     raise ProtocolError("ADC config characteristic unreadable")
             kvs = await Kvs.open(client, found.name)
-            return cls(client, info, adc_config, kvs)
+            state["kvs"] = kvs
+            return cls(client, info, adc_config, kvs, disconnected)
         except BaseException:
             await client.disconnect()
             raise
@@ -115,12 +140,24 @@ class AsyncDynamiteSampler:
         await self.close()
 
     async def close(self):
+        await self.kvs.close()
         if self._client.is_connected:
-            await self._client.stop_notify(KVS_CHR_UUID)
             await self._client.disconnect()
 
     def _rebuild_calibration(self, snapshot):
-        self.calibration = Calibration.from_kvs(snapshot, self._pga_gains)
+        """Rebuild after a KVS write. A write that leaves the cal data wrong
+        still succeeds; the failure surfaces on the next stream/read/tare."""
+        try:
+            self.calibration = Calibration.from_kvs(snapshot, self._pga_gains)
+            self._calibration_error = None
+        except CalibrationError as exc:
+            self.calibration = None
+            self._calibration_error = exc
+
+    def _require_calibration(self) -> Calibration:
+        if self._calibration_error is not None:
+            raise self._calibration_error
+        return self.calibration
 
     def _require_adc(self):
         if self._adc_config is None:
@@ -130,25 +167,33 @@ class AsyncDynamiteSampler:
         return self._adc_config
 
     @property
-    def sample_rate(self):
+    def sample_rate(self) -> int | None:
         return None if self._adc_config is None else self._adc_config.sample_rate
 
     @property
-    def gains(self):
+    def gains(self) -> list[int] | None:
         return None if self._adc_config is None else list(self._adc_config.gains)
 
-    async def stream(self, blocksize=DEFAULT_BLOCKSIZE, units="raw"):
+    async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
         """Infinite async generator of :class:`Block`."""
+        async for block in self._stream(blocksize, units):
+            yield block
+
+    async def _stream(self, blocksize, units, inactivity_timeout=None):
         config = self._require_adc()
-        self.calibration.check_units(units)
+        calibration = self._require_calibration()
+        calibration.check_units(units)
+        if blocksize < 1:
+            raise ValueError("blocksize must be >= 1")
         if self._active:
-            raise DynamiteError("a stream or read is already active")
+            raise StreamActive("a stream or read is already active")
         self._active = True
 
         rate = config.sample_rate
         num_channels = len(config.gains)
         queue = asyncio.Queue(maxsize=max(blocksize, rate * QUEUE_SECONDS))
         overrun = []
+        disc = asyncio.ensure_future(self._disconnected.wait())
 
         def on_notify(_sender, data):
             try:
@@ -156,37 +201,69 @@ class AsyncDynamiteSampler:
             except asyncio.QueueFull:
                 overrun.append(BufferOverrun("consumer slower than the feed"))
 
-        await self._client.start_notify(
-            DynamiteSamplerService.ADCFeed.UUID, on_notify
-        )
+        await self._client.start_notify(DynamiteSamplerService.ADCFeed.UUID, on_notify)
         try:
             async for block in self._assemble(
-                queue, overrun, blocksize, units, rate, num_channels
+                queue,
+                overrun,
+                disc,
+                blocksize,
+                units,
+                rate,
+                num_channels,
+                calibration,
+                inactivity_timeout,
             ):
                 yield block
         finally:
+            disc.cancel()
             if self._client.is_connected:
                 await self._client.stop_notify(
                     DynamiteSamplerService.ADCFeed.UUID
                 )
             self._active = False
 
-    async def _assemble(self, queue, overrun, blocksize, units, rate, num_channels):
+    async def _wait_packet(self, queue, disc, timeout):
+        """The next queued packet, or raise ConnectionLost / asyncio.TimeoutError."""
+        get = asyncio.ensure_future(queue.get())
+        try:
+            done, _ = await asyncio.wait(
+                {get, disc}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            if not get.done():
+                get.cancel()
+        if get in done:
+            return get.result()
+        if disc in done:
+            raise ConnectionLost("device disconnected mid-stream")
+        raise asyncio.TimeoutError
+
+    async def _assemble(
+        self,
+        queue,
+        overrun,
+        disc,
+        blocksize,
+        units,
+        rate,
+        num_channels,
+        calibration,
+        inactivity_timeout,
+    ):
         unwrapper = SsnUnwrapper()
         origin = None
         start_index = 0
         chunks = []
+        chunk_times = []
         count = 0
-        times = []
         while True:
             if overrun:
                 raise overrun[0]
             try:
-                data = await asyncio.wait_for(queue.get(), DISCONNECT_POLL_S)
+                data = await self._wait_packet(queue, disc, inactivity_timeout)
             except asyncio.TimeoutError:
-                if not self._client.is_connected:
-                    raise ConnectionLost("device disconnected mid-stream") from None
-                continue
+                raise ReadTimeout(f"no rows for {inactivity_timeout} s") from None
             ssn, payload = DynamiteSamplerService.ADCFeed.split(data)
             samples = _decode_samples(payload, num_channels)
             unwrapped, missed = unwrapper.unwrap(ssn, samples.shape[0])
@@ -195,27 +272,38 @@ class AsyncDynamiteSampler:
             now = time.monotonic()
             if missed:
                 chunks.append(np.full((missed, num_channels), np.nan))
-                times.extend([now] * missed)
+                chunk_times.append(now)
                 count += missed
             chunks.append(samples)
-            times.extend([now] * samples.shape[0])
+            chunk_times.append(now)
             count += samples.shape[0]
 
             while count >= blocksize:
-                rows = np.concatenate(chunks)
-                block_raw = rows[:blocksize]
-                block_times = times[:blocksize]
-                remaining = rows[blocksize:]
-                chunks = [remaining] if remaining.shape[0] else []
-                times = times[blocksize:]
-                count = remaining.shape[0]
+                parts = []
+                block_time = chunk_times[0]
+                need = blocksize
+                while need:
+                    head = chunks[0]
+                    if head.shape[0] <= need:
+                        parts.append(head)
+                        need -= head.shape[0]
+                        chunks.pop(0)
+                        chunk_times.pop(0)
+                    else:
+                        parts.append(head[:need])
+                        chunks[0] = head[need:]
+                        need = 0
+                count -= blocksize
+                block_raw = np.concatenate(parts)
                 yield self._make_block(
-                    block_raw, block_times, start_index, origin, rate, units
+                    block_raw, block_time, start_index, origin, rate, units, calibration
                 )
                 start_index += blocksize
 
-    def _make_block(self, block_raw, block_times, start_index, origin, rate, units):
-        data = self.calibration.convert(block_raw, units, self.tare_raw)
+    def _make_block(
+        self, block_raw, host_time, start_index, origin, rate, units, calibration
+    ) -> Block:
+        data = calibration.convert(block_raw, units, self.tare_raw)
         t = np.arange(start_index, start_index + block_raw.shape[0]) / rate
         return Block(
             data=data,
@@ -223,38 +311,20 @@ class AsyncDynamiteSampler:
             t=t,
             ssn0=int(origin + start_index),
             units=units,
-            host_time=block_times[0],
+            host_time=host_time,
         )
 
-    async def read(self, n, units="raw", timeout=DEFAULT_READ_TIMEOUT_S):
+    async def read(
+        self, n: int, units: str = "raw", timeout: float = DEFAULT_READ_TIMEOUT_S
+    ) -> Block:
         """Exactly ``n`` rows, or :class:`ReadTimeout`."""
-        self._require_adc()
-        self.calibration.check_units(units)
         if n < 1:
             raise ValueError("n must be >= 1")
-        if self._active:
-            raise DynamiteError("a stream or read is already active")
-        agen = self.stream(blocksize=1, units=units)
-        rows = []
-        first = None
+        agen = self._stream(n, units, timeout)
         try:
-            for _ in range(n):
-                try:
-                    block = await asyncio.wait_for(agen.__anext__(), timeout)
-                except asyncio.TimeoutError:
-                    raise ReadTimeout(
-                        f"no rows for {timeout} s while reading {n}"
-                    ) from None
-                if first is None:
-                    first = block
-                rows.append(block.raw[0])
+            return await agen.__anext__()
         finally:
             await agen.aclose()
-        block_raw = np.stack(rows)
-        rate = self._require_adc().sample_rate
-        return self._make_block(
-            block_raw, [first.host_time], 0, first.ssn0, rate, units
-        )
 
     async def tare(self, n=None):
         """Average ``n`` raw samples per channel into ``tare_raw`` (default
@@ -266,9 +336,45 @@ class AsyncDynamiteSampler:
         valid = np.count_nonzero(~np.isnan(block.raw), axis=0)
         if np.any(valid == 0):
             empty = [int(i) for i in np.nonzero(valid == 0)[0]]
-            raise DynamiteError(f"tare failed: no valid samples on channel(s) {empty}")
+            raise TareError(f"tare failed: no valid samples on channel(s) {empty}")
         self.tare_raw = np.nanmean(block.raw, axis=0)
         return self.tare_raw
+
+
+def _block_on(coro, loop):
+    """Run ``coro`` on ``loop`` (another thread) and block, interruptibly.
+
+    ``Future.result()`` is a lock acquire and is not interruptible on
+    Windows; polling lets Ctrl+C land, and cancelling the *task* (not just
+    the cross-thread future) runs the coroutine's finally blocks."""
+    holder = []
+
+    async def runner():
+        task = asyncio.ensure_future(coro)
+        holder.append(task)
+        return await task
+
+    fut = asyncio.run_coroutine_threadsafe(runner(), loop)
+    while True:
+        try:
+            return fut.result(timeout=_RUN_POLL_S)
+        except concurrent.futures.TimeoutError:
+            # The wait timed out iff the future is not done. If it is done,
+            # the coroutine raised a TimeoutError subclass
+            # (ReadTimeout/KvsTimeout): deliver that.
+            if fut.done():
+                raise
+        except KeyboardInterrupt:
+            loop.call_soon_threadsafe(
+                lambda: holder[0].cancel() if holder else fut.cancel()
+            )
+            # Wait for the cancellation's finally blocks to run, so the
+            # device is left idle, then re-raise.
+            try:
+                fut.result()
+            except BaseException:
+                pass
+            raise
 
 
 class _SyncNamespace:
@@ -276,16 +382,16 @@ class _SyncNamespace:
         self._dev = dev
         self._ns = namespace
 
-    def get(self, key):
+    def get(self, key: str) -> str:
         return self._dev._run(self._ns.get(key))
 
-    def set(self, key, value):
+    def set(self, key: str, value: str) -> str:
         return self._dev._run(self._ns.set(key, value))
 
-    def delete(self, key):
+    def delete(self, key: str) -> None:
         return self._dev._run(self._ns.delete(key))
 
-    def keys(self):
+    def keys(self) -> list[str]:
         return self._dev._run(self._ns.keys())
 
 
@@ -319,9 +425,7 @@ class DynamiteSampler:
         thread = threading.Thread(target=loop.run_forever, daemon=True)
         thread.start()
         try:
-            async_dev = asyncio.run_coroutine_threadsafe(
-                AsyncDynamiteSampler.connect(address), loop
-            ).result()
+            async_dev = _block_on(AsyncDynamiteSampler.connect(address), loop)
         except BaseException:
             loop.call_soon_threadsafe(loop.stop)
             thread.join()
@@ -330,7 +434,9 @@ class DynamiteSampler:
         return cls(async_dev, loop, thread)
 
     def _run(self, coro):
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+        if self._loop is None:
+            raise DynamiteError("device is closed")
+        return _block_on(coro, self._loop)
 
     def __enter__(self):
         return self
@@ -339,27 +445,31 @@ class DynamiteSampler:
         self.close()
 
     def close(self):
+        if self._loop is None:
+            return
+        loop = self._loop
         try:
             self._run(self._async.close())
         finally:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            loop.call_soon_threadsafe(loop.stop)
             self._thread.join()
-            self._loop.close()
+            loop.close()
+            self._loop = None
 
     @property
-    def info(self):
+    def info(self) -> DeviceInfo:
         return self._async.info
 
     @property
-    def sample_rate(self):
+    def sample_rate(self) -> int | None:
         return self._async.sample_rate
 
     @property
-    def gains(self):
+    def gains(self) -> list[int] | None:
         return self._async.gains
 
     @property
-    def calibration(self):
+    def calibration(self) -> Calibration:
         return self._async.calibration
 
     @property
@@ -370,13 +480,15 @@ class DynamiteSampler:
     def tare_raw(self, value):
         self._async.tare_raw = value
 
-    def read(self, n, units="raw", timeout=DEFAULT_READ_TIMEOUT_S):
+    def read(
+        self, n: int, units: str = "raw", timeout: float = DEFAULT_READ_TIMEOUT_S
+    ) -> Block:
         return self._run(self._async.read(n, units, timeout))
 
     def tare(self, n=None):
         return self._run(self._async.tare(n))
 
-    def stream(self, blocksize=DEFAULT_BLOCKSIZE, units="raw"):
+    def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
         agen = self._async.stream(blocksize, units)
         try:
             while True:
@@ -385,4 +497,5 @@ class DynamiteSampler:
                 except StopAsyncIteration:
                     return
         finally:
-            self._run(agen.aclose())
+            if self._loop is not None:
+                self._run(agen.aclose())

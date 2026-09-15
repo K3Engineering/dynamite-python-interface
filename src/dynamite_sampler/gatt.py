@@ -191,7 +191,7 @@ class TxPower(BLEService):
             return power.to_bytes(signed=True, length=1)
 
 
-class DeviceInfo(BLEService):
+class DeviceInformation(BLEService):
     """Read-only device info. The UUIDs are 16 bit hex."""
 
     UUID = "180A"

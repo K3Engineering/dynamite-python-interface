@@ -1,5 +1,6 @@
 """Device discovery and the one-device-in-range connect rule."""
 
+import asyncio
 import dataclasses
 
 import bleak
@@ -18,7 +19,7 @@ class FoundDevice:
     rssi: int
 
 
-async def discover(timeout=DEFAULT_DISCOVER_TIMEOUT_S):
+async def discover(timeout: float = DEFAULT_DISCOVER_TIMEOUT_S) -> list[FoundDevice]:
     """All Dynamite Samplers in range, sorted by RSSI descending."""
     from .gatt import DynamiteSamplerService
 
@@ -35,7 +36,36 @@ async def discover(timeout=DEFAULT_DISCOVER_TIMEOUT_S):
     return found
 
 
-async def find_single(address=None):
+async def _find_by_address(address: str) -> FoundDevice | None:
+    """Scan until ``address`` advertises, then stop (not the full timeout)."""
+    from .gatt import DynamiteSamplerService
+
+    wanted = address.upper()
+    found: list[FoundDevice] = []
+    done = asyncio.Event()
+
+    def on_detection(device, adv):
+        if device.address.upper() != wanted:
+            return
+        found.append(FoundDevice(device.address, device.name, adv.rssi))
+        done.set()
+
+    scanner = bleak.BleakScanner(
+        detection_callback=on_detection,
+        service_uuids=[DynamiteSamplerService.UUID],
+    )
+    await scanner.start()
+    try:
+        try:
+            await asyncio.wait_for(done.wait(), DEFAULT_DISCOVER_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return None
+    finally:
+        await scanner.stop()
+    return found[0]
+
+
+async def find_single(address=None) -> FoundDevice:
     """The one device in range (or the one matching ``address``).
 
     ``address`` may be an address string or a :class:`FoundDevice`.
@@ -46,13 +76,12 @@ async def find_single(address=None):
         raise TypeError(
             f"address must be a string or FoundDevice, got {type(address).__name__}"
         )
-    devices = await discover()
     if address is not None:
-        wanted = address.upper()
-        matches = [d for d in devices if d.address.upper() == wanted]
-        if not matches:
+        match = await _find_by_address(address)
+        if match is None:
             raise DeviceNotFound(f"No Dynamite Sampler with address {address} found")
-        return matches[0]
+        return match
+    devices = await discover()
     if not devices:
         raise DeviceNotFound("No Dynamite Sampler devices found")
     if len(devices) > 1:

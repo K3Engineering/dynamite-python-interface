@@ -149,9 +149,9 @@ class FeedSession:
 
     async def fetch_device_info(self):
         dev_info_cls = (
-            ds.DeviceInfo.FirmwareRevision,
-            ds.DeviceInfo.ManufacturerName,
-            ds.DeviceInfo.TxPowerLevel,
+            ds.DeviceInformation.FirmwareRevision,
+            ds.DeviceInformation.ManufacturerName,
+            ds.DeviceInformation.TxPowerLevel,
             ds.DynamiteSamplerService.ADCConfig,
         )
         self._device_info = {
