@@ -92,10 +92,3 @@ def test_set_verified_does_not_retry_non_busy_errors(error):
 def test_set_verified_rejects_zero_attempts():
     with pytest.raises(ValueError):
         asyncio.run(FakeClient().set_verified("F", "exc", "4.53", attempts=0))
-
-
-def test_set_many_verified():
-    client = FakeClient(corrupt_key="bad")
-    entries = {"a": "1", "bad": "2", "c": "3"}
-    readbacks = asyncio.run(client.set_many_verified("F", entries))
-    assert readbacks == {"a": "1", "bad": "corrupted", "c": "3"}

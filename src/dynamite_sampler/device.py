@@ -23,7 +23,7 @@ from .errors import (
     StreamActive,
     TareError,
 )
-from .gatt import DeviceInformation, DynamiteSamplerService
+from .gatt import DeviceInformation, DynamiteSamplerService, TxPower
 from .kvs import Kvs
 from .ssn import SsnUnwrapper
 
@@ -174,6 +174,23 @@ class AsyncDynamiteSampler:
     def gains(self) -> list[int] | None:
         return None if self._adc_config is None else list(self._adc_config.gains)
 
+    async def read_tx_power_dbm(self) -> int | None:
+        """Live read of the DIS TX Power Level (None if unreadable). Read per
+        call, not cached: the factory tools log it as a measurement condition."""
+        return await _read_characteristic(self._client, DeviceInformation.TxPowerLevel)
+
+    async def set_tx_power(self, dbm: int) -> int:
+        """Set the BLE TX power and verify the read-back. Mismatch raises."""
+        await self._client.write_gatt_char(
+            TxPower.TxPowerSet.UUID, TxPower.TxPowerSet.pack(dbm), response=True
+        )
+        readback = await self.read_tx_power_dbm()
+        if readback != dbm:
+            raise DynamiteError(
+                f"TX power read-back {readback} dBm != requested {dbm} dBm"
+            )
+        return readback
+
     async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
         """Infinite async generator of :class:`Block`."""
         async for block in self._stream(blocksize, units):
@@ -218,9 +235,7 @@ class AsyncDynamiteSampler:
         finally:
             disc.cancel()
             if self._client.is_connected:
-                await self._client.stop_notify(
-                    DynamiteSamplerService.ADCFeed.UUID
-                )
+                await self._client.stop_notify(DynamiteSamplerService.ADCFeed.UUID)
             self._active = False
 
     async def _wait_packet(self, queue, disc, timeout):
@@ -467,6 +482,12 @@ class DynamiteSampler:
     @property
     def gains(self) -> list[int] | None:
         return self._async.gains
+
+    def read_tx_power_dbm(self) -> int | None:
+        return self._run(self._async.read_tx_power_dbm())
+
+    def set_tx_power(self, dbm: int) -> int:
+        return self._run(self._async.set_tx_power(dbm))
 
     @property
     def calibration(self) -> Calibration:

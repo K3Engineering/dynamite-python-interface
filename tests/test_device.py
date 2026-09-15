@@ -7,14 +7,18 @@ import numpy as np
 import pytest
 
 import dynamite_sampler.discovery as discovery
-from dynamite_sampler.device import AsyncDynamiteSampler, DynamiteSampler, _decode_samples
+from dynamite_sampler.device import (
+    AsyncDynamiteSampler,
+    DynamiteSampler,
+    _decode_samples,
+)
 from dynamite_sampler.errors import (
     ConnectionLost,
     DynamiteError,
     ReadTimeout,
     StreamActive,
 )
-from dynamite_sampler.gatt import ADCConfigData
+from dynamite_sampler.gatt import ADCConfigData, TxPower
 from dynamite_sampler.ssn import SsnUnwrapper
 
 
@@ -110,6 +114,38 @@ def test_stream_converts_units():
     block = asyncio.run(run())
     assert np.array_equal(block.data, block.raw)
     assert block.units == "raw"
+
+
+class FakePowerClient(FakeClient):
+    def __init__(self, power_dbm):
+        super().__init__()
+        self.power = power_dbm
+        self.writes = []
+
+    async def read_gatt_char(self, uuid):
+        return bytes([self.power & 0xFF])
+
+    async def write_gatt_char(self, uuid, data, response=True):
+        self.writes.append((uuid, bytes(data)))
+        self.power = int.from_bytes(bytes(data), signed=True)
+
+
+def test_tx_power_read_and_verified_set():
+    client = FakePowerClient(-6)
+    device = make_device(client)
+    assert asyncio.run(device.read_tx_power_dbm()) == -6
+    assert asyncio.run(device.set_tx_power(-9)) == -9
+    assert client.writes == [(TxPower.TxPowerSet.UUID, bytes([0xF7]))]
+
+
+def test_set_tx_power_readback_mismatch_raises():
+    class StuckClient(FakePowerClient):
+        async def write_gatt_char(self, uuid, data, response=True):
+            pass  # the set never takes effect
+
+    device = make_device(StuckClient(0))
+    with pytest.raises(DynamiteError, match="read-back"):
+        asyncio.run(device.set_tx_power(-9))
 
 
 def test_read_returns_one_block_across_packets():

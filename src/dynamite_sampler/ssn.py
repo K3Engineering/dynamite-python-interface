@@ -25,12 +25,3 @@ class SsnUnwrapper:
         unwrapped = self._expected + missed
         self._expected = unwrapped + sample_count
         return unwrapped, missed
-
-    def unwrap_and_modify(self, feed_packet):
-        """Legacy FeedSession entry point: rewrite the packet header's SSN in
-        place and return the samples missed since the previous packet."""
-        unwrapped, missed = self.unwrap(
-            feed_packet.header.sample_sequence_number, len(feed_packet.samples)
-        )
-        feed_packet.header.sample_sequence_number = unwrapped
-        return missed

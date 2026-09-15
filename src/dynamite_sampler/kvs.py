@@ -26,7 +26,6 @@ from types import MappingProxyType
 
 import bleak
 
-from .discovery import find_single
 from .errors import KvsBusy, KvsDeviceError, KvsError, KvsRejected, KvsTimeout
 
 __all__ = [
@@ -90,11 +89,11 @@ def _check_device_name(value):
 
 
 class KvsClient:
-    """An open BLE connection with the KVS notification plumbing set up.
+    """The KVS command engine over an already-connected BLE client.
 
-    Usage:
-        async with await KvsClient.connect() as kvs:
-            await kvs.set(FOLDER_FACTORY, "exc", "4.53,nominal")
+    Owned by :class:`Kvs`, which subscribes it with :meth:`start` and routes
+    disconnect events into :meth:`fail_pending`. It does not own the
+    connection.
     """
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):
@@ -109,15 +108,6 @@ class KvsClient:
         self._lock = asyncio.Lock()
         self._pending = None
 
-    @classmethod
-    async def connect(cls, address: str | None = None) -> "KvsClient":
-        device = await find_single(address)
-        client = bleak.BleakClient(device.address)
-        await client.connect()
-        kvs = cls(client, device.name or "?")
-        await kvs.start()
-        return kvs
-
     async def start(self) -> None:
         """Subscribe to the KVS notification characteristic."""
         await self.client.start_notify(KVS_CHR_UUID, self._on_notify)
@@ -126,11 +116,6 @@ class KvsClient:
         """Unsubscribe from the KVS notification characteristic."""
         if self.client.is_connected:
             await self.client.stop_notify(KVS_CHR_UUID)
-
-    async def disconnect(self) -> None:
-        await self.stop()
-        if self.client.is_connected:
-            await self.client.disconnect()
 
     def fail_pending(self, exc: Exception) -> None:
         """Settle an in-flight command with ``exc`` (called on link loss)."""
@@ -141,12 +126,6 @@ class KvsClient:
         _, fut = pending
         if not fut.done():
             fut.set_exception(exc)
-
-    async def __aenter__(self) -> "KvsClient":
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        await self.disconnect()
 
     def _on_notify(self, _sender, data) -> None:
         reply = bytes(data).rstrip(b"\x00")
@@ -274,14 +253,6 @@ class KvsClient:
                     raise
                 await asyncio.sleep(KVS_WRITE_DELAY_S)
         raise ValueError(f"attempts must be >= 1 (got {attempts})")
-
-    async def set_many_verified(
-        self, folder: str, entries: dict[str, str]
-    ) -> dict[str, str]:
-        return {
-            key: await self.set_verified(folder, key, value)
-            for key, value in entries.items()
-        }
 
 
 class KvsNamespace:
