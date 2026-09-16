@@ -50,6 +50,8 @@ class DeviceInfo:
     board_model: str
     firmware: str | None
     manufacturer: str | None
+    model_number: str | None = None
+    serial: str | None = None
 
 
 async def _read_characteristic(client, cls):
@@ -115,8 +117,18 @@ class AsyncDynamiteSampler:
             manufacturer = await _read_characteristic(
                 client, DeviceInformation.ManufacturerName
             )
+            model_number = await _read_characteristic(
+                client, DeviceInformation.ModelNumber
+            )
+            serial = await _read_characteristic(client, DeviceInformation.SerialNumber)
             info = DeviceInfo(
-                found.address, found.name, board_model, firmware, manufacturer
+                found.address,
+                found.name,
+                board_model,
+                firmware,
+                manufacturer,
+                model_number,
+                serial,
             )
             adc_config = None
             if board_model != UNCONFIGURED:

@@ -205,6 +205,24 @@ class DeviceInformation(BLEService):
         def unpack(b: bytearray | bytes) -> str:
             return str(b, "utf-8")
 
+    class ModelNumber(BLECharacteristicRead[str]):
+        """Marketing name, from the flashed board identity."""
+
+        UUID = "2A24"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")
+
+    class SerialNumber(BLECharacteristicRead[str]):
+        """Serial number string (the eFuse MAC hex)."""
+
+        UUID = "2A25"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")
+
     class FirmwareRevision(BLECharacteristicRead[str]):
         UUID = "2A26"
 

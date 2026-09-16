@@ -6,6 +6,7 @@ through it. The pipeline is normative in ``docs/csv-format-v2.md``.
 """
 
 import dataclasses
+import math
 from typing import Literal, Mapping
 
 import numpy as np
@@ -146,6 +147,18 @@ class ChannelBoard:
     @property
     def is_calibrated(self):
         return self._xs is not None
+
+    def counts_per_mvv_chord(self):
+        """Counts per mV/V for the CSV precision quantum (csv-format-v2.md
+        §Precision): the chord through the two outermost cal points when
+        calibrated (setpoints and readings are in storage order, first point
+        the most positive), else the nominal chain (``None`` when the
+        runtime PGA gains are unknown)."""
+        if self.is_calibrated:
+            return (self.readings[0] - self.readings[-1]) / (
+                self.setpoints[0] - self.setpoints[-1]
+            )
+        return self._counts_per_mvv
 
     def mvv(self, raw):
         """Absolute raw counts -> mV/V (extrapolating along the outer segments).
@@ -365,6 +378,21 @@ class Calibration:
                     raise UnitUnavailable(
                         f"unit {units!r} needs a load cell in slot {i} (ch{i})"
                     )
+
+    def csv_decimals(self, units: str) -> list[int]:
+        """Fixed-point decimals per channel for a dynamite-csv column in
+        ``units`` (csv-format-v2.md §Precision): one guard digit beyond the
+        value of 1 ADC count in that unit."""
+        self.check_units(units)
+        if units == "raw":
+            return [1] * len(self._channels)
+        decimals = []
+        for i, channel in enumerate(self._channels):
+            quantum = abs(
+                self._scale_per_mvv(i, units) / channel.counts_per_mvv_chord()
+            )
+            decimals.append(min(10, max(0, math.ceil(1 - math.log10(quantum) - 1e-9))))
+        return decimals
 
     def _scale_per_mvv(self, channel, units):
         if units == "mV/V":

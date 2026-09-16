@@ -6,9 +6,7 @@ Defaults to CSV + metrics + the TCP socket demo when nothing is selected.
 """
 
 import argparse
-import csv
 import datetime
-import pathlib
 import socket
 import time
 
@@ -17,29 +15,19 @@ from dynamite_sampler import gatt as ds
 
 
 class CsvSink:
-    """Write the raw feed to CSV."""
+    """Record the feed to a dynamite-csv 1 file (``CsvRecorder``)."""
 
-    COLUMNS = ("ssn", "t_unix_ms", "ch0", "ch1", "ch2", "ch3")
-
-    def __init__(self, file_path_str: str = ""):
+    def __init__(self, dev, file_path_str: str = "", units: str = "raw"):
         if not file_path_str:
             date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             file_path_str = f"./data/feeddata_{date_str}.csv"
-        path = pathlib.Path(file_path_str).resolve()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(path, "w", newline="")
-        self._writer = csv.writer(self._file)
-        self._writer.writerow(self.COLUMNS)
+        self._recorder = dms.CsvRecorder(dev, file_path_str, units=units)
 
     def block(self, block):
-        t_ms = round(time.time() * 1000)
-        for i, row in enumerate(block.raw):
-            cells = ("" if value != value else int(value) for value in row)
-            self._writer.writerow((block.ssn0 + i, t_ms, *cells))
-        self._file.flush()
+        self._recorder.write_block(block)
 
     def close(self):
-        self._file.close()
+        self._recorder.close()
 
 
 class MetricsSink:
@@ -162,7 +150,13 @@ def main() -> None:
         nargs="?",
         const="",
         default=None,
-        help="write the raw feed to CSV (default path when no value is given)",
+        help="record the feed to a dynamite-csv file "
+        "(default path when no value is given)",
+    )
+    parser.add_argument(
+        "--units",
+        default="raw",
+        help="converted unit for the CSV recording (raw, mV/V, mV, kgf, N, kN, lbf)",
     )
     parser.add_argument(
         "--metrics", action="store_true", help="print sample-rate metrics"
@@ -186,7 +180,7 @@ def main() -> None:
 
         sinks = []
         if args.csv is not None:
-            sinks.append(CsvSink(args.csv))
+            sinks.append(CsvSink(dev, args.csv, units=args.units))
         if args.tqdm:
             sinks.append(TqdmSink())
         if args.metrics:

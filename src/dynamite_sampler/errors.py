@@ -66,6 +66,11 @@ class CalibrationError(DynamiteError):
     Raised by ``connect()``."""
 
 
+class CsvFormatError(DynamiteError):
+    """A dynamite-csv file is malformed (read) or the recording's inputs are
+    inconsistent (write: non-contiguous blocks, wrong channel count)."""
+
+
 class KvsError(DynamiteError):
     """Base for KVS command failures."""
 

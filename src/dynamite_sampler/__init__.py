@@ -12,6 +12,7 @@ import asyncio
 from . import discovery as _discovery
 from .block import Block
 from .calibration import Calibration, LoadCell
+from .csv_io import CsvRecorder, read_csv
 from .device import (
     UNCONFIGURED,
     AsyncDynamiteSampler,
@@ -23,6 +24,7 @@ from .errors import (
     BufferOverrun,
     CalibrationError,
     ConnectionLost,
+    CsvFormatError,
     DeviceNotFound,
     DynamiteError,
     KvsBusy,
@@ -52,7 +54,10 @@ __all__ = [
     "Block",
     "Calibration",
     "LoadCell",
+    "CsvRecorder",
+    "read_csv",
     "DynamiteError",
+    "CsvFormatError",
     "DeviceNotFound",
     "MultipleDevicesFound",
     "ConnectionLost",
