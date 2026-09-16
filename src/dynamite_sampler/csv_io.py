@@ -14,8 +14,6 @@ import datetime
 import importlib.metadata
 import json
 import logging
-import math
-from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -37,64 +35,22 @@ except importlib.metadata.PackageNotFoundError:  # not installed (editable src)
 _GENERATOR = f"dynamite-sampler-py {_PACKAGE_VERSION}"
 
 
-def _render_number(value) -> str:
-    """A number exactly as the file emits it: plain fixed-point, never
-    scientific notation. One renderer shared by the JSON and YAML forms, so
-    the two renderings cannot disagree."""
-    if isinstance(value, bool):
-        raise ValueError("booleans render as true/false")
-    if isinstance(value, int):
-        return str(value)
-    if not math.isfinite(value):
-        raise ValueError(f"no fixed-point form for {value!r}")
-    text = repr(float(value))
-    if "e" in text:
-        return format(Decimal(text), "f")
-    return text
-
-
 def _to_json(value) -> str:
-    """Compact JSON (the metadata line's machine form). Numbers go through
-    the shared fixed-point renderer; the stdlib encoder would emit
-    scientific notation, which the format forbids."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return _render_number(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, dict):
-        pairs = (_to_json(key) + ":" + _to_json(item) for key, item in value.items())
-        return "{" + ",".join(pairs) + "}"
-    if isinstance(value, list):
-        return "[" + ",".join(_to_json(item) for item in value) + "]"
-    raise ValueError(f"no JSON form for {type(value).__name__}")
+    """The metadata line's machine form: compact one-line JSON. Number
+    spelling is whatever the stdlib emits (csv-format-v2.md §The two
+    renderings); non-finite floats raise (allow_nan=False), as JSON has
+    no literal for them."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
 _YAML_WIDTH = 1_000_000
 
 
 class _YamlDumper(yaml.SafeDumper):
-    """SafeDumper whose floats render through the shared fixed-point
-    formatter, so the same number cannot read one way in the JSON line and
-    another in the YAML block."""
-
     def increase_indent(self, flow=False, indentless=False):
         # Indent block sequences under their key (PyYAML's default is the
         # less readable indentless style).
         return super().increase_indent(flow, indentless=False)
-
-
-def _represent_float(dumper, value):
-    text = _render_number(value)
-    if "." not in text:
-        text += ".0"  # keep a whole-valued float a float on reload
-    return dumper.represent_scalar("tag:yaml.org,2002:float", text)
-
-
-_YamlDumper.add_representer(float, _represent_float)
 
 
 def yaml_lines(metadata: dict) -> list[str]:
