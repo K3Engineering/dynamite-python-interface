@@ -1,7 +1,9 @@
 """dynamite-csv read/write (csv_io), driven by the format doc's worked
 example and the package's own recorder, no BLE required."""
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -9,7 +11,13 @@ import yaml
 
 import dynamite_sampler as dms
 from dynamite_sampler.block import Block
-from dynamite_sampler.calibration import Calibration
+from dynamite_sampler.calibration import (
+    FORCE_FACTORS,
+    BoardNominals,
+    Calibration,
+    ChannelBoard,
+    LoadCell,
+)
 from dynamite_sampler.csv_io import MAGIC, CsvRecorder, _json_line, _yaml_lines
 from dynamite_sampler.device import DeviceInfo
 from dynamite_sampler.errors import (
@@ -376,6 +384,352 @@ def test_two_channel_round_trip(tmp_path):
     assert block.raw.shape == (2, 2)
     assert block.data.shape == (2, 2)
     assert block.ssn0 == 7
+
+
+# --- Regeneration: quartet 2 rebuilds from quartet 1 + metadata ------------
+
+_CELLED_USER = {
+    f"lc{i}.{key}": value
+    for i in range(4)
+    for key, value in (("cap", "100"), ("sens", "2.007"))
+}
+
+
+def _calibrated_snapshot():
+    factory = dict(_NOMINAL_FACTORY)
+    factory["cal.date"] = "2026-06-14"
+    factory["cal.adc"] = "1,1,1,1"
+    for i in range(4):
+        factory[f"ch{i}.r"] = "10001.2,9.98,10.01,10.02,9.99,9998.7"
+        factory[f"ch{i}.raw"] = "6383553.0,3192096.0,120.0,-3191776.0,-6383313.0"
+    return {"F": factory, "U": dict(_CELLED_USER)}
+
+
+def _record(tmp_path, unit, snapshot, tare_raw):
+    dev = _FakeDev([1, 1, 1, 1], snapshot, tare_raw=tare_raw)
+    path = tmp_path / "rec.csv"
+    with CsvRecorder(dev, path, units=unit) as recorder:
+        recorder.write_block(
+            _block(
+                [[1000, -2000, 300000, -400000], [np.nan] * 4, [5, 6, 7, 8]],
+                41230,
+            )
+        )
+        recorder.write_block(_block([[9, 10, 11, 12]], 41233))
+    return path
+
+
+def _calibration_from_metadata(metadata):
+    """A Calibration rebuilt from a file's metadata line: channel boards
+    from ``board_cal`` or the afe block (a board-less file has no boards),
+    load cells per ``channels[]``."""
+    afe = metadata["device"]["afe"]
+    nominals = None
+    if afe["adc_ref_v"] is not None:
+        nominals = BoardNominals(
+            adc_fsr_v=afe["adc_ref_v"],
+            afe_gain=afe["front_end_gain"],
+            excitation_v=afe["excitation_v"],
+            pga_gains=afe["adc_gain"],
+            provenance={},
+        )
+    boards = []
+    load_cells = []
+    for i, entry in enumerate(metadata["channels"]):
+        board_cal = entry["board_cal"]
+        if nominals is None:
+            boards.append(None)
+        elif board_cal is None:
+            boards.append(ChannelBoard(nominals, i))
+        else:
+            boards.append(ChannelBoard(nominals, i, board_cal["r"], board_cal["raw"]))
+        cell = entry["load_cell"]
+        load_cells.append(
+            None
+            if cell is None
+            else LoadCell(
+                cell["name"] or "", cell["capacity_kg"], cell["sensitivity_mv_v"]
+            )
+        )
+    return Calibration(boards, load_cells, nominals, None)
+
+
+def _doc_scale_per_mvv(cell, unit, excitation_v):
+    if unit == "mV/V":
+        return 1.0
+    if unit == "mV":
+        return excitation_v
+    return FORCE_FACTORS[unit] * cell.kgf_per_mv_v
+
+
+def _doc_decimals(board, cell, unit, excitation_v):
+    quantum = abs(
+        _doc_scale_per_mvv(cell, unit, excitation_v) / board.counts_per_mvv_chord()
+    )
+    return min(10, max(0, math.ceil(1 - math.log10(quantum) - 1e-9)))
+
+
+def _convertible(calibration, i, unit):
+    """Per the doc's blank semantics: an all-blank converted column is
+    exactly a channel the unit can't reach (no board at all, or — under a
+    force unit — no load cell)."""
+    if unit == "raw":
+        return True
+    board = calibration.board[i]
+    if board is None or board.counts_per_mvv_chord() is None:
+        return False
+    return unit not in FORCE_FACTORS or calibration.load_cells[i] is not None
+
+
+def regenerate_check(path):
+    """None when every converted cell of the file equals its regeneration
+    from quartet 1 + the metadata line (compared as text — the contract is
+    the written digits); a description of the first mismatch otherwise.
+    Raises CsvFormatError when the metadata can't rebuild the conversion."""
+    dms.read_csv(path)  # container checks (magic, header, ssn, count range)
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    metadata = json.loads(lines[1][2:])
+    unit = metadata["converted_unit"]
+    rows = [line.split(",") for line in lines[2:] if line and not line.startswith("#")]
+    n = (len(rows[0]) - 1) // 2
+    try:
+        calibration = _calibration_from_metadata(metadata)
+        tares = [entry["tare_raw"] for entry in metadata["channels"]]
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise CsvFormatError(
+            f"{path}: metadata cannot rebuild the conversion: {exc}"
+        ) from None
+    if len(calibration.board) != n:
+        raise CsvFormatError(
+            f"{path}: {len(calibration.board)} metadata channels, {n} raw columns"
+        )
+    for r, row in enumerate(rows[1:]):
+        for i in range(n):
+            raw_text = row[1 + i]
+            if raw_text == "" or not _convertible(calibration, i, unit):
+                expected = ""
+            else:
+                board = calibration.board[i]
+                tare = tares[i]
+                counts = float(raw_text)
+                if unit == "raw":
+                    value = counts if tare is None else counts - tare
+                    decimals = 1
+                else:
+                    cell = calibration.load_cells[i]
+                    exc = calibration.nominals.excitation_v
+                    tare_mvv = 0.0 if tare is None else float(board.mvv(tare))
+                    net = float(board.mvv(counts)) - tare_mvv
+                    value = net * _doc_scale_per_mvv(cell, unit, exc)
+                    decimals = _doc_decimals(board, cell, unit, exc)
+                expected = f"{value:.{decimals}f}"
+            actual = row[1 + n + i]
+            if actual != expected:
+                return (
+                    f"row {r + 1} ch{i}: converted cell {actual!r} "
+                    f"!= regenerated {expected!r}"
+                )
+    return None
+
+
+@pytest.mark.parametrize("unit", ["raw", "mV/V", "mV", "kgf", "N", "kN", "lbf"])
+@pytest.mark.parametrize("calibrated", [False, True])
+@pytest.mark.parametrize("tare_raw", [None, [-12340.5, 55.0, 7001.25, -220.0]])
+def test_recorded_file_regenerates(tmp_path, unit, calibrated, tare_raw):
+    """Self-containment on this package's own output: the recorder's files
+    regenerate at every unit, on both board shapes, gross and net, gap rows
+    included."""
+    snapshot = (
+        _calibrated_snapshot()
+        if calibrated
+        else {"F": dict(_NOMINAL_FACTORY), "U": dict(_CELLED_USER)}
+    )
+    assert regenerate_check(_record(tmp_path, unit, snapshot, tare_raw)) is None
+
+
+_AFE = {
+    "adc_ref_v": 1.2,
+    "front_end_gain": 101.0,
+    "adc_gain": [1.0, 1.0, 1.0, 1.0],
+    "excitation_v": 4.53,
+}
+
+_BOARD_CAL = {
+    "r": [10001.2, 9.98, 10.01, 10.02, 9.99, 9998.7],
+    "raw": [6383553.0, 3192096.0, 120.0, -3191776.0, -6383313.0],
+    "n": {"fsr": 1.2, "afe": 101.0, "pga": 1.0, "exc": 4.53},
+}
+
+
+def _app_metadata(unit, channels, afe=_AFE):
+    return {
+        "format": "dynamite-csv",
+        "version": 1,
+        "generator": "dynamite-flutter 1.0.0",
+        "recorded_at": "2026-07-29T10:05:32.184-04:00",
+        "recorded_unix": 1785333932,
+        "sample_rate_hz": 1000,
+        "ssn_origin": 41230,
+        "converted_unit": unit,
+        "device": {
+            "name": "DS A4CF1208F51E",
+            "id": "A4CF1208F51E",
+            "model": "Dynamite Sampler Pro Mk1",
+            "hardware_rev": "v700P",
+            "firmware": "v700P|v1.2.0-3-gdeadbee",
+            "manufacturer": "K3 Engineering",
+            "afe": afe,
+            "kvs": None,
+        },
+        "channels": channels,
+    }
+
+
+def _hand_written(tmp_path, metadata, header, rows):
+    path = tmp_path / "app.csv"
+    path.write_text(
+        "\n".join([MAGIC, "# " + _json_line(metadata), header, *rows]) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_regeneration_accepts_app_shaped_file(tmp_path):
+    """Export shapes the Python recorder never emits: per-channel all-blank
+    columns (cell-less channels under a force unit), mixed calibrated and
+    nominal boards, a null tare on one channel, and a gap row. Expected
+    cells come from a ``from_kvs`` parse of the same data — a construction
+    path independent of ``_calibration_from_metadata``."""
+    cal = Calibration.from_kvs(_calibrated_snapshot(), [1.0, 1.0, 1.0, 1.0])
+    tares = [-12340.5, 55.0, None, -220.0]
+    channels = [
+        {
+            "load_cell": {
+                "name": "Beam 100 kg",
+                "capacity_kg": 100.0,
+                "sensitivity_mv_v": 2.007,
+            },
+            "tare_raw": tares[0],
+            "board_cal": _BOARD_CAL,
+        },
+        {"load_cell": None, "tare_raw": tares[1], "board_cal": None},
+        {"load_cell": None, "tare_raw": tares[2], "board_cal": _BOARD_CAL},
+        {"load_cell": None, "tare_raw": tares[3], "board_cal": None},
+    ]
+    cell = cal.load_cells[0]
+    decimals = _doc_decimals(cal.board[0], cell, "kgf", cal.nominals.excitation_v)
+
+    def kgf_row(ssn, counts):
+        board = cal.board[0]
+        net = float(board.mvv(counts[0])) - float(board.mvv(tares[0]))
+        value = net * cell.kgf_per_mv_v
+        return f"{ssn},{','.join(str(c) for c in counts)},{value:.{decimals}f},,,"
+
+    path = _hand_written(
+        tmp_path,
+        _app_metadata("kgf", channels),
+        "ssn,ch0,ch1,ch2,ch3,ch0_kgf,ch1_kgf,ch2_kgf,ch3_kgf",
+        [
+            kgf_row(41230, [-12339, 55, 7001, -220]),
+            "41231,,,,,,,,",
+            kgf_row(41232, [-12350, 58, 7000, -219]),
+        ],
+    )
+    assert regenerate_check(path) is None
+
+
+@pytest.mark.parametrize("unit", ["mV/V", "raw"])
+def test_regeneration_accepts_boardless_app_file(tmp_path, unit):
+    """An unprovisioned-board export: afe all-null, every board_cal null.
+    Converted units are all-blank columns; raw still converts."""
+    afe = {
+        "adc_ref_v": None,
+        "front_end_gain": None,
+        "adc_gain": [None] * 4,
+        "excitation_v": None,
+    }
+    tares = [10.5, None, -3.25, 7.0]
+    channels = [
+        {"load_cell": None, "tare_raw": tare, "board_cal": None} for tare in tares
+    ]
+    rows = []
+    for s, counts in enumerate([[100, -200, 300, 400], [101, -201, 301, 401]]):
+        cells = [str(41230 + s), *(str(c) for c in counts)]
+        cells.extend(
+            f"{counts[i] - (tares[i] or 0.0):.1f}" if unit == "raw" else ""
+            for i in range(4)
+        )
+        rows.append(",".join(cells))
+    path = _hand_written(
+        tmp_path,
+        _app_metadata(unit, channels, afe),
+        f"ssn,ch0,ch1,ch2,ch3,ch0_{unit},ch1_{unit},ch2_{unit},ch3_{unit}",
+        rows,
+    )
+    assert regenerate_check(path) is None
+
+
+def test_tampered_tare_fails_regeneration(tmp_path):
+    path = _record(
+        tmp_path,
+        "mV/V",
+        _calibrated_snapshot(),
+        [-12340.5, 55.0, 7001.25, -220.0],
+    )
+    text = path.read_text(encoding="utf-8")
+    tampered = text.replace('"tare_raw":-12340.5', '"tare_raw":-12340.4')
+    assert tampered != text
+    path.write_text(tampered, encoding="utf-8")
+    assert "regenerated" in (regenerate_check(path) or "")
+
+
+def test_tampered_cell_fails_regeneration(tmp_path):
+    path = _record(tmp_path, "raw", {"F": dict(_NOMINAL_FACTORY), "U": {}}, None)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    row = lines.index(
+        "41230,1000,-2000,300000,-400000,1000.0,-2000.0,300000.0,-400000.0"
+    )
+    cells = lines[row].split(",")
+    cells[5] = "1000.1"
+    lines[row] = ",".join(cells)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert "regenerated" in (regenerate_check(path) or "")
+
+
+def test_unexpected_blank_fails_regeneration(tmp_path):
+    path = _record(tmp_path, "raw", {"F": dict(_NOMINAL_FACTORY), "U": {}}, None)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    row = lines.index(
+        "41230,1000,-2000,300000,-400000,1000.0,-2000.0,300000.0,-400000.0"
+    )
+    cells = lines[row].split(",")
+    cells[5] = ""
+    lines[row] = ",".join(cells)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert "regenerated" in (regenerate_check(path) or "")
+
+
+def test_regeneration_rejects_metadata_without_conversion_inputs(tmp_path):
+    """read_csv tolerates a metadata line without device/channels; the file
+    is then not self-contained, and the regenerator says so."""
+    path = _write(tmp_path, f"{MAGIC}\n{_META}\nssn,ch0,ch0_raw\n0,1,1.0")
+    dms.read_csv(path)
+    with pytest.raises(CsvFormatError, match="rebuild"):
+        regenerate_check(path)
+
+
+def test_regeneration_rejects_channel_count_mismatch(tmp_path):
+    channels = [
+        {"load_cell": None, "tare_raw": None, "board_cal": None} for _ in range(4)
+    ]
+    path = _hand_written(
+        tmp_path,
+        _app_metadata("mV/V", channels),
+        "ssn,ch0,ch0_mV/V",
+        ["41230,5,0.00000000"],
+    )
+    with pytest.raises(CsvFormatError, match="metadata channels"):
+        regenerate_check(path)
 
 
 # --- Reader rejects ----------------------------------------------------------
