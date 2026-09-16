@@ -339,6 +339,7 @@ def test_recorder_round_trip(tmp_path):
     assert np.allclose(block.data, expected_data, equal_nan=True)
     assert np.isnan(block.raw[1]).all() and np.isnan(block.data[1]).all()
     assert np.allclose(block.t, [0.0, 0.001, 0.002, 0.003])
+    assert b"\r" not in path.read_bytes()
     text = path.read_text(encoding="utf-8")
     assert text.startswith(MAGIC + "\n# {")
     assert "101,,,,,,,," in text  # the gap row keeps its ssn, blank cells

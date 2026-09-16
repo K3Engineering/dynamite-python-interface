@@ -119,6 +119,7 @@ class CsvRecorder:
         self._channels = self._channel_blocks(self._calibration, gains, self._tare_raw)
         self._path = Path(path)
         self._file = None
+        self._csv_writer = None
         self._next_ssn = None
 
     @staticmethod
@@ -189,9 +190,11 @@ class CsvRecorder:
         self._file.write("# " + _json_line(metadata) + "\n")
         for line in _yaml_lines(metadata):
             self._file.write("# " + line + "\n")
-        raw_cols = ",".join(f"ch{i}" for i in range(self._n))
-        data_cols = ",".join(f"ch{i}_{self._units}" for i in range(self._n))
-        self._file.write(f"ssn,{raw_cols},{data_cols}\n")
+        csv_writer = csv.writer(self._file, lineterminator="\n")
+        raw_cols = [f"ch{i}" for i in range(self._n)]
+        data_cols = [f"ch{i}_{self._units}" for i in range(self._n)]
+        csv_writer.writerow(["ssn", *raw_cols, *data_cols])
+        self._csv_writer = csv_writer
         self._next_ssn = ssn_origin
 
     def write_block(self, block: Block) -> None:
@@ -208,7 +211,7 @@ class CsvRecorder:
                 f"non-contiguous block: ssn0 {block.ssn0}, expected {self._next_ssn}"
             )
         data = self._calibration.convert(raw, self._units, self._tare_raw)
-        lines = []
+        rows = []
         for row in range(raw.shape[0]):
             cells = [str(self._next_ssn)]
             blanks = np.isnan(raw[row])
@@ -218,9 +221,9 @@ class CsvRecorder:
                 cells.append(
                     "" if blanks[i] else f"{data[row, i]:.{self._decimals[i]}f}"
                 )
-            lines.append(",".join(cells))
+            rows.append(cells)
             self._next_ssn += 1
-        self._file.write("\n".join(lines) + "\n")
+        self._csv_writer.writerows(rows)
         self._file.flush()
 
     def close(self) -> None:
@@ -229,6 +232,7 @@ class CsvRecorder:
         else:
             self._file.close()
             self._file = None
+            self._csv_writer = None
 
     def __enter__(self) -> "CsvRecorder":
         return self
