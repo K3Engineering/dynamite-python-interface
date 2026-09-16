@@ -9,25 +9,24 @@ Firmware protocol
     '0' rejected — the request's fault: no such key, bad frame, IDX past
         the last entry (this is how list_entries iteration ends)
     'B' busy     — the device is locked (ADC feed streaming); the request
-        was not processed. Retrying is the caller's policy; set_verified
-        implements a bounded one
+        was not processed. Retrying is the caller's policy
     'E' error    — device-side storage (NVS) failure; never a missing key
 
 Commands: SET / GET / DEL / IDX. Folder: 'F'actory, 'U'ser, 'S'ettings.
 Keys <= 15 chars, values <= 128 chars, frames < 240 bytes.
 
 Every request gets an answer, so a missing answer (KvsTimeout) means the
-link is broken — not a busy device. Still sequence KVS access and feed
-streaming: concurrent access now fails fast with KvsBusy instead of
-hanging.
+link is broken — not a busy device. Sequence KVS access and feed streaming:
+concurrent access fails fast with KvsBusy instead of hanging.
 """
 
 import asyncio
 import re
+from types import MappingProxyType
 
 import bleak
 
-from dynamite_sampler_bleak_util import find_dynamite_samplers
+from .errors import KvsBusy, KvsDeviceError, KvsError, KvsRejected, KvsTimeout
 
 __all__ = [
     "KVS_CHR_UUID",
@@ -40,12 +39,9 @@ __all__ = [
     "MAX_VAL_LEN",
     "KVS_WRITE_DELAY_S",
     "KEY_DEVICE_NAME",
-    "KvsError",
-    "KvsRejected",
-    "KvsBusy",
-    "KvsDeviceError",
-    "KvsTimeout",
     "KvsClient",
+    "Kvs",
+    "KvsNamespace",
 ]
 
 KVS_CHR_UUID = "10adce11-68a6-450b-9810-ca11b39fd283"
@@ -68,10 +64,10 @@ NVS_TYPE_STR = 0x21
 MAX_KEY_LEN = 15  # firmware: USER_KVS_MAX_KEY_LEN
 MAX_VAL_LEN = 128  # firmware: USER_KVS_MAX_VAL_LEN
 
-# Settings namespace keys (value grammar: docs/flash-schema-v1.md).
+# Settings namespace keys (value grammar: docs/flash-schema-v2.md).
 KEY_DEVICE_NAME = "device_name"
 
-# device_name grammar (docs/flash-schema-v1.md): ASCII, 1-29 chars, first
+# device_name grammar (docs/flash-schema-v2.md): ASCII, 1-29 chars, first
 # char alphanumeric, no outer whitespace. Enforced client-side on every
 # write — the firmware transport does not validate, and the firmware that
 # will apply this value to the GAP identity must not depend on writers.
@@ -83,33 +79,7 @@ _COMMAND_TIMEOUT_S = 5.0
 KVS_WRITE_DELAY_S = 0.5
 
 
-class KvsError(Exception):
-    """Base for KVS command failures."""
-
-
-class KvsRejected(KvsError):
-    """The device answered '0': no such key, bad input, or IDX past the
-    last entry."""
-
-
-class KvsBusy(KvsError):
-    """The device answered 'B': locked (ADC feed streaming), the request
-    was not processed."""
-
-
-class KvsDeviceError(KvsError):
-    """The device answered 'E': a storage-layer (NVS) failure on the
-    device. Never a missing key; a mid-iteration error is not
-    end-of-keys."""
-
-
-class KvsTimeout(KvsError, TimeoutError):
-    """No reply within the command timeout. The device answers every
-    request (a busy device answers 'B'), so this means the link is
-    broken. Also catchable as the builtin TimeoutError."""
-
-
-def _check_device_name(value: str) -> None:
+def _check_device_name(value):
     if value != value.strip():
         raise ValueError(f"device_name must not have outer whitespace: {value!r}")
     if not _DEVICE_NAME_RE.fullmatch(value):
@@ -119,11 +89,11 @@ def _check_device_name(value: str) -> None:
 
 
 class KvsClient:
-    """An open BLE connection with the KVS notification plumbing set up.
+    """The KVS command engine over an already-connected BLE client.
 
-    Usage:
-        async with await KvsClient.connect() as kvs:
-            await kvs.set(FOLDER_FACTORY, "exc", "4.53,nominal")
+    Owned by :class:`Kvs`, which subscribes it with :meth:`start` and routes
+    disconnect events into :meth:`fail_pending`. It does not own the
+    connection.
     """
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):
@@ -136,48 +106,28 @@ class KvsClient:
         # matching to be attributable at all). _pending is the single
         # outstanding (request, future); see _on_notify.
         self._lock = asyncio.Lock()
-        self._pending: tuple[bytes, asyncio.Future[bytes]] | None = None
+        self._pending = None
 
-    @classmethod
-    async def connect(cls, address: str | None = None) -> "KvsClient":
-        """Find a dynamite sampler and connect. With address=None, exactly one
-        device must be in range; otherwise pass --address to disambiguate."""
-        devices = await find_dynamite_samplers()
-        if address:
-            matches = [d for d, _ in devices if d.address.upper() == address.upper()]
-            if not matches:
-                raise KvsError(f"No dynamite sampler with address {address} found")
-            device = matches[0]
-        elif len(devices) == 1:
-            device = devices[0][0]
-        elif len(devices) == 0:
-            raise KvsError("No dynamite sampler devices found")
-        else:
-            found = "\n".join(
-                f"  {d.address}  {d.name}  (RSSI {adv.rssi} dBm)"
-                for d, adv in devices
-            )
-            raise KvsError(f"{len(devices)} devices found, pass --address:\n{found}")
+    async def start(self) -> None:
+        """Subscribe to the KVS notification characteristic."""
+        await self.client.start_notify(KVS_CHR_UUID, self._on_notify)
 
-        print(f"Connecting to {device.address} ({device.name})")
-        client = bleak.BleakClient(device)
-        await client.connect()
-        kvs = cls(client, device.name or "?")
-        await client.start_notify(KVS_CHR_UUID, kvs._on_notify)
-        return kvs
-
-    async def disconnect(self) -> None:
+    async def stop(self) -> None:
+        """Unsubscribe from the KVS notification characteristic."""
         if self.client.is_connected:
             await self.client.stop_notify(KVS_CHR_UUID)
-            await self.client.disconnect()
 
-    async def __aenter__(self) -> "KvsClient":
-        return self
+    def fail_pending(self, exc: Exception) -> None:
+        """Settle an in-flight command with ``exc`` (called on link loss)."""
+        pending = self._pending
+        if pending is None:
+            return
+        self._pending = None
+        _, fut = pending
+        if not fut.done():
+            fut.set_exception(exc)
 
-    async def __aexit__(self, *exc) -> None:
-        await self.disconnect()
-
-    def _on_notify(self, _sender, data: bytearray) -> None:
+    def _on_notify(self, _sender, data) -> None:
         reply = bytes(data).rstrip(b"\x00")
         pending = self._pending
         if pending is None:
@@ -221,7 +171,7 @@ class KvsClient:
         ignored — see _on_notify)."""
         request = cmd + folder.encode() + data.encode()
         async with self._lock:
-            fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+            fut = asyncio.get_running_loop().create_future()
             self._pending = (request, fut)
             try:
                 await self.client.write_gatt_char(KVS_CHR_UUID, request, response=True)
@@ -254,7 +204,7 @@ class KvsClient:
     async def get_device_name(self) -> str | None:
         """The user-assigned device name (Settings namespace), or None when
         unset — the device then goes by its advertised name. Value grammar:
-        docs/flash-schema-v1.md. A missing key is the rejection case here;
+        docs/flash-schema-v2.md. A missing key is the rejection case here;
         transport and framing failures raise."""
         try:
             return await self.get(FOLDER_SETTINGS, KEY_DEVICE_NAME)
@@ -304,11 +254,93 @@ class KvsClient:
                 await asyncio.sleep(KVS_WRITE_DELAY_S)
         raise ValueError(f"attempts must be >= 1 (got {attempts})")
 
-    async def set_many_verified(
-        self, folder: str, entries: dict[str, str]
-    ) -> dict[str, str]:
-        """set_verified over a {key: value} mapping; returns {key: readback}."""
-        return {
-            key: await self.set_verified(folder, key, value)
-            for key, value in entries.items()
-        }
+
+class KvsNamespace:
+    """One folder of a :class:`Kvs`. Writes are verified and update the
+    snapshot, then trigger the device's calibration rebuild."""
+
+    def __init__(self, kvs: "Kvs", folder: str):
+        self._kvs = kvs
+        self._folder = folder
+
+    async def get(self, key: str) -> str:
+        return await self._kvs._client.get(self._folder, key)
+
+    async def keys(self) -> list[str]:
+        return await self._kvs._client.keys(self._folder)
+
+    async def set(self, key: str, value: str) -> str:
+        readback = await self._kvs._client.set_verified(self._folder, key, value)
+        if readback != value:
+            raise KvsError(
+                f"read-back mismatch for {self._folder}:{key}: "
+                f"{readback!r} != {value!r}"
+            )
+        self._kvs._namespaces.setdefault(self._folder, {})[key] = readback
+        self._kvs._changed()
+        return readback
+
+    async def delete(self, key: str) -> None:
+        await self._kvs._client.delete(self._folder, key)
+        self._kvs._namespaces.get(self._folder, {}).pop(key, None)
+        self._kvs._changed()
+
+
+class Kvs:
+    """The device's KVS: a read-only raw snapshot plus per-namespace handles.
+
+    ``set``/``delete`` update the snapshot in place after each verified
+    write (with the read-back values the device just confirmed) rather than
+    re-reading three namespaces over BLE, so ``snapshot`` is a live,
+    read-only view: an indexable ``{folder: {key: raw_string}}`` mapping.
+    The device's ``Calibration`` rebuilds from a copy on every change.
+    """
+
+    def __init__(self, client: bleak.BleakClient, advertised_name: str):
+        self._client = KvsClient(client, advertised_name)
+        self._on_change = None
+        self._namespaces = {}
+        self.factory = KvsNamespace(self, FOLDER_FACTORY)
+        self.user = KvsNamespace(self, FOLDER_USER)
+        self.settings = KvsNamespace(self, FOLDER_SETTINGS)
+
+    @property
+    def snapshot(self):
+        """Read-only view of ``{folder: {key: raw_string}}`` (live)."""
+        return MappingProxyType(
+            {folder: MappingProxyType(ns) for folder, ns in self._namespaces.items()}
+        )
+
+    @classmethod
+    async def open(cls, client: bleak.BleakClient, advertised_name: str) -> "Kvs":
+        kvs = cls(client, advertised_name)
+        await kvs._client.start()
+        await kvs.refresh()
+        return kvs
+
+    async def close(self) -> None:
+        """Stop KVS notifications (does not disconnect the client)."""
+        await self._client.stop()
+
+    def fail_pending(self, exc: Exception) -> None:
+        """Settle an in-flight command with ``exc`` (called on link loss)."""
+        self._client.fail_pending(exc)
+
+    def set_on_change(self, callback):
+        self._on_change = callback
+
+    def _changed(self):
+        if self._on_change is not None:
+            self._on_change(self.snapshot)
+
+    async def refresh(self) -> None:
+        """Re-read every string key of every namespace into the snapshot."""
+        namespaces = {}
+        for folder in (FOLDER_FACTORY, FOLDER_USER, FOLDER_SETTINGS):
+            entries = await self._client.list_entries(folder)
+            namespaces[folder] = {
+                key: await self._client.get(folder, key)
+                for key, nvs_type in entries
+                if nvs_type == NVS_TYPE_STR
+            }
+        self._namespaces = namespaces

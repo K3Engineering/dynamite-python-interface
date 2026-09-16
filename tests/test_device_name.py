@@ -1,9 +1,13 @@
-# Run it like so: `python -m tests.test_device_name`
+"""Fake-driven checks of the Settings ``device_name`` key (grammar per
+docs/flash-schema-v2.md).
 
-import asyncio
-import unittest
+KvsClient with the transport (_command) stubbed out; client-side validation
+and get_device_name run against the real logic.
+"""
 
-from dynamite_sampler_kvs import (
+import pytest
+
+from dynamite_sampler.kvs import (
     FOLDER_SETTINGS,
     KEY_DEVICE_NAME,
     KvsClient,
@@ -31,58 +35,57 @@ class FakeClient(KvsClient):
         raise NotImplementedError(cmd)
 
 
-class GetDeviceNameTest(unittest.TestCase):
-    def test_unset_returns_none(self):
-        self.assertIsNone(asyncio.run(FakeClient().get_device_name()))
+async def test_unset_returns_none():
+    assert await FakeClient().get_device_name() is None
 
-    def test_set_returns_value(self):
+
+async def test_set_returns_value():
+    client = FakeClient()
+    client.store[(FOLDER_SETTINGS, KEY_DEVICE_NAME)] = "Rack 4 (West)"
+    assert await client.get_device_name() == "Rack 4 (West)"
+
+
+async def test_reads_settings_namespace_only():
+    # A same-named key in another folder must not leak in.
+    client = FakeClient()
+    client.store[("F", KEY_DEVICE_NAME)] = "wrong folder"
+    assert await client.get_device_name() is None
+
+
+async def test_valid_names_written_verbatim():
+    for name in ["Rack 4 (West)", "A", "x" * 29, "DUT-04.2 'main'"]:
         client = FakeClient()
-        client.store[(FOLDER_SETTINGS, KEY_DEVICE_NAME)] = "Rack 4 (West)"
-        self.assertEqual(asyncio.run(client.get_device_name()), "Rack 4 (West)")
+        await client.set(FOLDER_SETTINGS, KEY_DEVICE_NAME, name)
+        assert client.store[(FOLDER_SETTINGS, KEY_DEVICE_NAME)] == name
 
-    def test_reads_settings_namespace_only(self):
-        # A same-named key in another folder must not leak in.
+
+async def test_invalid_names_raise_before_any_write():
+    invalid = [
+        "",  # empty is a DEL, not a SET
+        " Rack 4",  # outer whitespace
+        "Rack 4 ",  # passes the bare regex — still invalid
+        "Rack\t4",  # control whitespace
+        "x" * 30,  # too long
+        "Räck 4",  # non-ASCII
+        "Rack&4",  # outside the charset
+        "'Rack 4",  # first char must be alphanumeric
+    ]
+    for name in invalid:
         client = FakeClient()
-        client.store[("F", KEY_DEVICE_NAME)] = "wrong folder"
-        self.assertIsNone(asyncio.run(client.get_device_name()))
+        with pytest.raises(ValueError):
+            await client.set(FOLDER_SETTINGS, KEY_DEVICE_NAME, name)
+        assert client.store == {}, name
 
 
-class SetDeviceNameTest(unittest.TestCase):
-    def test_valid_names_written_verbatim(self):
-        for name in ["Rack 4 (West)", "A", "x" * 29, "DUT-04.2 'main'"]:
-            client = FakeClient()
-            asyncio.run(client.set(FOLDER_SETTINGS, KEY_DEVICE_NAME, name))
-            self.assertEqual(client.store[(FOLDER_SETTINGS, KEY_DEVICE_NAME)], name)
-
-    def test_invalid_names_raise_before_any_write(self):
-        invalid = [
-            "",             # empty is a DEL, not a SET
-            " Rack 4",      # outer whitespace
-            "Rack 4 ",      # passes the bare regex — still invalid
-            "Rack\t4",      # control whitespace
-            "x" * 30,       # too long
-            "Räck 4",       # non-ASCII
-            "Rack&4",       # outside the charset
-            "'Rack 4",      # first char must be alphanumeric
-        ]
-        for name in invalid:
-            client = FakeClient()
-            with self.assertRaises(ValueError, msg=name):
-                asyncio.run(client.set(FOLDER_SETTINGS, KEY_DEVICE_NAME, name))
-            self.assertEqual(client.store, {}, name)
-
-    def test_other_settings_keys_not_policed(self):
-        # Unknown keys pass through untouched (preserve-unknown-keys rule);
-        # no grammar exists for them.
-        client = FakeClient()
-        asyncio.run(client.set(FOLDER_SETTINGS, "future_key", "?! \x01"))
-        self.assertEqual(client.store[(FOLDER_SETTINGS, "future_key")], "?! \x01")
-
-    def test_same_key_in_other_folders_not_policed(self):
-        client = FakeClient()
-        asyncio.run(client.set("U", KEY_DEVICE_NAME, "anything & co!!"))
-        self.assertEqual(client.store[("U", KEY_DEVICE_NAME)], "anything & co!!")
+async def test_other_settings_keys_not_policed():
+    # Unknown keys pass through untouched (preserve-unknown-keys rule);
+    # no grammar exists for them.
+    client = FakeClient()
+    await client.set(FOLDER_SETTINGS, "future_key", "?! \x01")
+    assert client.store[(FOLDER_SETTINGS, "future_key")] == "?! \x01"
 
 
-if __name__ == "__main__":
-    unittest.main()
+async def test_same_key_in_other_folders_not_policed():
+    client = FakeClient()
+    await client.set("U", KEY_DEVICE_NAME, "anything & co!!")
+    assert client.store[("U", KEY_DEVICE_NAME)] == "anything & co!!"

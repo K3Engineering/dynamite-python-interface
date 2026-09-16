@@ -1,24 +1,15 @@
-"""Python classes defining registers for the ADS131M0, in little endian as exposed by
-the dynamite sampler board. They are in a separate file to keep the dynamite_sampler_api
-more streamlined, since the registers are a bunch of verbose boiler plate.
+"""Register layouts for the ADS131M04, as exposed by the Dynamite Sampler.
+
+Little-endian ctypes structures: fields are declared MSB-first (like the
+datasheet) and reversed for ``LittleEndianStructure``. ``_pack_ = 1`` keeps
+them tight.
 """
 
 import ctypes
 
-## ADS131 M04 registers
-# _pack_ = 1 # Ensures tight packing with no padding
-# The fields are defined from MSB to LSB (like the datasheet),
-# and then reversed (to match what ctypes.LittleEndianStructure expects).
-
-
-# TODO: currently the registers only parse the raw bytes, but doesn't interpret what
-# the fields mean. Consider adding that maybe?
-
 
 class ADCRegisterBase(ctypes.LittleEndianStructure):
-    """Base class for all registers so that they have the same way of representing the
-    register values.
-    TODO: Not sure if this is the best way, it is just for debugging for now."""
+    """Common repr for the register structures."""
 
     def __repr__(self):
         fields = []
@@ -27,9 +18,7 @@ class ADCRegisterBase(ctypes.LittleEndianStructure):
                 value = self.__getattribute__(name)
                 value_bin = format(value, f"0{bits}b")
                 fields.append(f"{name}=0b{value_bin}")
-
-        init_str = ", ".join(fields)
-        return f"{type(self).__name__}({init_str})"
+        return f"{type(self).__name__}({', '.join(fields)})"
 
 
 class ID(ADCRegisterBase):
