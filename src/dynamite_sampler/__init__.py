@@ -10,6 +10,7 @@ with dms.connect() as dev:
 import asyncio
 
 from . import discovery as _discovery
+from .assemble import BlockAssembler, blocks_from_packets
 from .block import Block
 from .calibration import Calibration, LoadCell
 from .csv_io import CsvRecorder
@@ -44,6 +45,7 @@ from .errors import (
     TareError,
     UnitUnavailable,
 )
+from .packet import Packet
 
 __version__ = "0.1.0"
 
@@ -56,6 +58,9 @@ __all__ = [
     "DeviceInfo",
     "UNCONFIGURED",
     "Block",
+    "BlockAssembler",
+    "blocks_from_packets",
+    "Packet",
     "Calibration",
     "LoadCell",
     "CsvRecorder",

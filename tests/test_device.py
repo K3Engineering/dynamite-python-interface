@@ -90,6 +90,7 @@ async def test_stream_inserts_nan_gap_rows_and_arithmetic_time():
     await agen.aclose()
     assert block.raw.shape == (3, 4)
     assert block.ssn0 == 10
+    assert block.rows_dropped == 1
     assert np.allclose(block.t, [0.0, 0.001, 0.002])
     assert np.all(np.isnan(block.raw[2]))
     assert np.all(np.isnan(block.data[2]))
@@ -168,7 +169,7 @@ async def test_block_host_time_is_first_packet():
     await wait_notify(client)
     t0 = time.monotonic()
     client.notify(None, packet(0, [[1, 2, 3, 4]]))  # first packet
-    await asyncio.sleep(0.02)  # let _assemble process it
+    await asyncio.sleep(0.02)  # let the assembler process it
     t1 = time.monotonic()
     client.notify(None, packet(1, [[5, 6, 7, 8], [9, 10, 11, 12]]))
     block = await pending

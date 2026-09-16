@@ -9,6 +9,7 @@ import time
 import bleak
 import numpy as np
 
+from .assemble import BlockAssembler, blocks_from_packets
 from .block import Block
 from .calibration import Calibration
 from .discovery import find_single
@@ -25,6 +26,7 @@ from .errors import (
 )
 from .gatt import DeviceInformation, DynamiteSamplerService, TxPower
 from .kvs import Kvs
+from .packet import Packet
 from .ssn import SsnUnwrapper
 
 ADCConfig = DynamiteSamplerService.ADCConfig
@@ -166,7 +168,9 @@ class AsyncDynamiteSampler:
             self.calibration = None
             self._calibration_error = exc
 
-    def _require_calibration(self) -> Calibration:
+    def require_calibration(self) -> Calibration:
+        """The current calibration, raising its deferred error if a KVS write
+        left it invalid."""
         if self._calibration_error is not None:
             raise self._calibration_error
         return self.calibration
@@ -203,24 +207,24 @@ class AsyncDynamiteSampler:
             )
         return readback
 
-    async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
-        """Infinite async generator of :class:`Block`."""
-        async for block in self._stream(blocksize, units):
-            yield block
+    async def stream_packets(self, inactivity_timeout: float | None = None):
+        """Infinite async generator of :class:`Packet`: the raw feed, one
+        item per BLE notification.
 
-    async def _stream(self, blocksize, units, inactivity_timeout=None):
+        The packet layer beneath :meth:`stream`: consume it directly for
+        per-packet latency or link metrics, and fold it into blocks with
+        :func:`blocks_from_packets` when both are needed. Packets are raw
+        counts only; no calibration is required. ``inactivity_timeout``
+        raises :class:`ReadTimeout` after that many seconds without a
+        packet.
+        """
         config = self._require_adc()
-        calibration = self._require_calibration()
-        calibration.check_units(units)
-        if blocksize < 1:
-            raise ValueError("blocksize must be >= 1")
         if self._active:
             raise StreamActive("a stream or read is already active")
         self._active = True
 
-        rate = config.sample_rate
         num_channels = len(config.gains)
-        queue = asyncio.Queue(maxsize=max(blocksize, rate * QUEUE_SECONDS))
+        queue = asyncio.Queue(maxsize=config.sample_rate * QUEUE_SECONDS)
         overrun = []
         disc = asyncio.ensure_future(self._disconnected.wait())
 
@@ -231,24 +235,50 @@ class AsyncDynamiteSampler:
                 overrun.append(BufferOverrun("consumer slower than the feed"))
 
         await self._client.start_notify(DynamiteSamplerService.ADCFeed.UUID, on_notify)
+        unwrapper = SsnUnwrapper()
         try:
-            async for block in self._assemble(
-                queue,
-                overrun,
-                disc,
-                blocksize,
-                units,
-                rate,
-                num_channels,
-                calibration,
-                inactivity_timeout,
-            ):
-                yield block
+            while True:
+                if overrun:
+                    raise overrun[0]
+                try:
+                    data = await self._wait_packet(queue, disc, inactivity_timeout)
+                except asyncio.TimeoutError:
+                    raise ReadTimeout(f"no rows for {inactivity_timeout} s") from None
+                ssn, payload = DynamiteSamplerService.ADCFeed.split(data)
+                samples = _decode_samples(payload, num_channels)
+                unwrapped, missed = unwrapper.unwrap(ssn, samples.shape[0])
+                yield Packet(
+                    time=time.monotonic(),
+                    ssn=unwrapped,
+                    rows_dropped=missed,
+                    payload_bytes=len(data),
+                    raw=samples,
+                )
         finally:
             disc.cancel()
             if self._client.is_connected:
                 await self._client.stop_notify(DynamiteSamplerService.ADCFeed.UUID)
             self._active = False
+
+    def _block_assembler(self, blocksize, units) -> BlockAssembler:
+        config = self._require_adc()
+        return BlockAssembler(
+            self.require_calibration(),
+            config.sample_rate,
+            blocksize,
+            units,
+            self.tare_raw,
+        )
+
+    async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
+        """Infinite async generator of :class:`Block`.
+
+        Sugar over :meth:`stream_packets` + :func:`blocks_from_packets`;
+        compose those directly to consume both layers.
+        """
+        assembler = self._block_assembler(blocksize, units)
+        async for block in blocks_from_packets(self.stream_packets(), assembler):
+            yield block
 
     async def _wait_packet(self, queue, disc, timeout):
         """The next queued packet, or raise ConnectionLost / asyncio.TimeoutError."""
@@ -266,88 +296,16 @@ class AsyncDynamiteSampler:
             raise ConnectionLost("device disconnected mid-stream")
         raise asyncio.TimeoutError
 
-    async def _assemble(
-        self,
-        queue,
-        overrun,
-        disc,
-        blocksize,
-        units,
-        rate,
-        num_channels,
-        calibration,
-        inactivity_timeout,
-    ):
-        unwrapper = SsnUnwrapper()
-        origin = None
-        start_index = 0
-        chunks = []
-        chunk_times = []
-        count = 0
-        while True:
-            if overrun:
-                raise overrun[0]
-            try:
-                data = await self._wait_packet(queue, disc, inactivity_timeout)
-            except asyncio.TimeoutError:
-                raise ReadTimeout(f"no rows for {inactivity_timeout} s") from None
-            ssn, payload = DynamiteSamplerService.ADCFeed.split(data)
-            samples = _decode_samples(payload, num_channels)
-            unwrapped, missed = unwrapper.unwrap(ssn, samples.shape[0])
-            if origin is None:
-                origin = unwrapped
-            now = time.monotonic()
-            if missed:
-                chunks.append(np.full((missed, num_channels), np.nan))
-                chunk_times.append(now)
-                count += missed
-            chunks.append(samples)
-            chunk_times.append(now)
-            count += samples.shape[0]
-
-            while count >= blocksize:
-                parts = []
-                block_time = chunk_times[0]
-                need = blocksize
-                while need:
-                    head = chunks[0]
-                    if head.shape[0] <= need:
-                        parts.append(head)
-                        need -= head.shape[0]
-                        chunks.pop(0)
-                        chunk_times.pop(0)
-                    else:
-                        parts.append(head[:need])
-                        chunks[0] = head[need:]
-                        need = 0
-                count -= blocksize
-                block_raw = np.concatenate(parts)
-                yield self._make_block(
-                    block_raw, block_time, start_index, origin, rate, units, calibration
-                )
-                start_index += blocksize
-
-    def _make_block(
-        self, block_raw, host_time, start_index, origin, rate, units, calibration
-    ) -> Block:
-        data = calibration.convert(block_raw, units, self.tare_raw)
-        t = np.arange(start_index, start_index + block_raw.shape[0]) / rate
-        return Block(
-            data=data,
-            raw=block_raw,
-            t=t,
-            ssn0=int(origin + start_index),
-            units=units,
-            host_time=host_time,
-        )
-
     async def read(
         self, n: int, units: str = "raw", timeout: float = DEFAULT_READ_TIMEOUT_S
     ) -> Block:
         """Exactly ``n`` rows, or :class:`ReadTimeout`."""
         if n < 1:
             raise ValueError("n must be >= 1")
-        agen = self._stream(n, units, timeout)
+        assembler = self._block_assembler(n, units)
+        agen = blocks_from_packets(
+            self.stream_packets(inactivity_timeout=timeout), assembler
+        )
         try:
             return await agen.__anext__()
         finally:
@@ -521,8 +479,7 @@ class DynamiteSampler:
     def tare(self, n=None):
         return self._run(self._async.tare(n))
 
-    def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
-        agen = self._async.stream(blocksize, units)
+    def _iter_async(self, agen):
         try:
             while True:
                 try:
@@ -532,3 +489,9 @@ class DynamiteSampler:
         finally:
             if self._loop is not None:
                 self._run(agen.aclose())
+
+    def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
+        return self._iter_async(self._async.stream(blocksize, units))
+
+    def stream_packets(self):
+        return self._iter_async(self._async.stream_packets())

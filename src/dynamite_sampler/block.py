@@ -11,9 +11,9 @@ class Block:
 
     ``raw`` is absolute counts (``(n, N) float64``, exact for 24-bit) and
     ``data`` is the same rows converted to ``units``. Dropped samples are NaN
-    rows, so a block always spans exactly ``n / sample_rate`` seconds.
-    ``host_time`` is NaN for a file-sourced block: it never arrived over a
-    link.
+    rows (``rows_dropped`` of them), so a block always spans exactly
+    ``n / sample_rate`` seconds. ``host_time`` is NaN for a file-sourced
+    block: it never arrived over a link.
     """
 
     data: np.ndarray
@@ -22,3 +22,4 @@ class Block:
     ssn0: int
     units: str
     host_time: float
+    rows_dropped: int = 0

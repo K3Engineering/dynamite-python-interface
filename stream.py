@@ -1,16 +1,31 @@
 #!/usr/bin/env python
 """Stream Dynamite sampler data to various locations.
 
-Each sink is a recipe over ``dev.stream()``: blocks in, side effect out.
+Data sinks are recipes over blocks (blocks in, side effect out); metrics
+sinks ride the packet layer beneath them, fed from the same fan-out loop.
 Defaults to CSV + metrics + the TCP socket demo when nothing is selected.
 """
 
 import argparse
+import asyncio
 import datetime
 import socket
+from typing import Protocol, TypeVar
+
+import numpy as np
 
 import dynamite_sampler as dms
 from dynamite_sampler import gatt as ds
+
+T = TypeVar("T")
+
+
+class Sink(Protocol[T]):
+    """Receives stream items one by one; ``close`` on shutdown."""
+
+    def handle(self, item: T) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class CsvSink:
@@ -22,7 +37,7 @@ class CsvSink:
             file_path_str = f"./data/feeddata_{date_str}.csv"
         self._recorder = dms.CsvRecorder(dev, file_path_str, units=units)
 
-    def block(self, block):
+    def handle(self, block):
         self._recorder.write_block(block)
 
     def close(self):
@@ -38,11 +53,52 @@ class TqdmSink:
 
         self._bar = tqdm(desc="Samples", unit="samples")
 
-    def block(self, block):
+    def handle(self, block):
         self._bar.update(block.raw.shape[0])
 
     def close(self):
         self._bar.close()
+
+
+class MetricsSink:
+    """Print link-health metrics on one \\r line, from the packet layer:
+    packets/sec, bytes/sec, rows/sec, and dropped rows."""
+
+    def __init__(self, print_dt: float = 0.5):
+        self._print_dt = print_dt
+        self._start = None
+        self._last_print = 0.0
+        self._packets = 0
+        self._bytes = 0
+        self._rows = 0
+        self._dropped = 0
+
+    def handle(self, packet):
+        if self._start is None:
+            self._start = packet.time
+            self._last_print = packet.time
+        self._packets += 1
+        self._bytes += packet.payload_bytes
+        self._rows += packet.rows
+        self._dropped += packet.rows_dropped
+        if packet.time - self._last_print < self._print_dt:
+            return
+        self._last_print = packet.time
+        elapsed = packet.time - self._start
+        if elapsed <= 0:
+            return
+        print(
+            f"[{datetime.timedelta(seconds=int(elapsed))}] "
+            f"{self._packets / elapsed:6.1f} packets/s, "
+            f"{self._bytes / elapsed:7.0f} B/s, "
+            f"{self._rows / elapsed:7.1f} rows/s, "
+            f"{self._dropped} dropped rows",
+            end="\r",
+        )
+
+    def close(self):
+        if self._packets:
+            print()
 
 
 class SocketSink:
@@ -52,6 +108,7 @@ class SocketSink:
     receiver divides by the int32 scale factor sent once per port."""
 
     CONVERSIONS = ("adc", "volts_adc_ir", "volts_opamp_ir", "kg_with_opamp")
+    _ZERO = (0).to_bytes(4, "little", signed=True)
 
     def __init__(self, dev, ports=None, conversion: str = "volts_adc_ir"):
         self.ports = ports or [8090, 8091, 8092, 8093]
@@ -89,15 +146,16 @@ class SocketSink:
             ),
         }[conversion]
 
-    def block(self, block):
+    def handle(self, block):
         for row in block.raw:
+            if np.isnan(row[0]):
+                # A NaN row is a dropped sample; zero is the receiver's
+                # gap marker.
+                for server in self._servers:
+                    server.send(self._ZERO)
+                continue
             for server, value in zip(self._servers, row):
-                # A NaN row is a dropped sample; zero is the receiver's gap marker.
-                server.send(
-                    (0 if value != value else int(value)).to_bytes(
-                        4, "little", signed=True
-                    )
-                )
+                server.send(int(value).to_bytes(4, "little", signed=True))
 
     def close(self):
         print("Closing server sockets")
@@ -105,10 +163,45 @@ class SocketSink:
             server.close()
 
 
-def consume(dev, sinks, blocksize: int = 100) -> None:
-    for block in dev.stream(blocksize=blocksize, units="raw"):
-        for sink in sinks:
-            sink.block(block)
+async def consume(dev, data_sinks, packet_sinks, blocksize: int = 100) -> None:
+    """The fan-out loop: packets to packet sinks, assembled blocks to data
+    sinks."""
+    assembler = dms.BlockAssembler(
+        dev.require_calibration(),
+        dev.sample_rate,
+        blocksize,
+        units="raw",
+        tare_raw=dev.tare_raw,
+    )
+    async for packet in dev.stream_packets():
+        for sink in packet_sinks:
+            sink.handle(packet)
+        for block in assembler.push(packet):
+            for sink in data_sinks:
+                sink.handle(block)
+
+
+async def amain(args) -> None:
+    async with await dms.AsyncDynamiteSampler.connect(args.address) as dev:
+        if args.txpwr is not None:
+            await dev.set_tx_power(args.txpwr)
+
+        data_sinks = []
+        packet_sinks = []
+        if args.csv is not None:
+            data_sinks.append(CsvSink(dev, args.csv, units=args.units))
+        if args.tqdm:
+            data_sinks.append(TqdmSink())
+        if args.socket:
+            data_sinks.append(SocketSink(dev, conversion=args.conversion))
+        if args.metrics:
+            packet_sinks.append(MetricsSink())
+
+        try:
+            await consume(dev, data_sinks, packet_sinks)
+        finally:
+            for sink in data_sinks + packet_sinks:
+                sink.close()
 
 
 def main() -> None:
@@ -133,11 +226,18 @@ def main() -> None:
     parser.add_argument(
         "--metrics",
         action="store_true",
-        help="show a live sample-rate bar (TQDM; equivalent to --tqdm)",
+        help="show live link metrics (packets/sec, bytes/sec, dropped rows)",
     )
     parser.add_argument("--tqdm", action="store_true", help="show a TQDM sample bar")
     parser.add_argument(
         "--socket", action="store_true", help="stream to localhost sockets"
+    )
+    parser.add_argument(
+        "--conversion",
+        choices=SocketSink.CONVERSIONS,
+        default="volts_adc_ir",
+        help="unit conversion the socket receiver should divide out "
+        "(default: %(default)s)",
     )
     parser.add_argument(
         "--txpwr", type=int, default=None, help="set the BLE TX power of the board"
@@ -148,25 +248,10 @@ def main() -> None:
         args.metrics = args.socket = True
         args.csv = ""
 
-    with dms.connect(args.address) as dev:
-        if args.txpwr is not None:
-            dev.set_tx_power(args.txpwr)
-
-        sinks = []
-        if args.csv is not None:
-            sinks.append(CsvSink(dev, args.csv, units=args.units))
-        if args.metrics or args.tqdm:
-            sinks.append(TqdmSink())
-        if args.socket:
-            sinks.append(SocketSink(dev))
-
-        try:
-            consume(dev, sinks)
-        except KeyboardInterrupt:
-            print()
-        finally:
-            for sink in sinks:
-                sink.close()
+    try:
+        asyncio.run(amain(args))
+    except KeyboardInterrupt:
+        print()
 
 
 if __name__ == "__main__":
