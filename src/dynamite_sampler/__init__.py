@@ -33,6 +33,9 @@ from .errors import (
     KvsRejected,
     KvsTimeout,
     MultipleDevicesFound,
+    OtaError,
+    OtaRejected,
+    OtaTimeout,
     ProtocolError,
     ProvisioningError,
     ReadTimeout,
@@ -74,6 +77,9 @@ __all__ = [
     "KvsBusy",
     "KvsDeviceError",
     "KvsTimeout",
+    "OtaError",
+    "OtaRejected",
+    "OtaTimeout",
 ]
 
 

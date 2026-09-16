@@ -95,3 +95,19 @@ class KvsTimeout(KvsError, TimeoutError):
     """No reply within the command timeout. The device answers every
     request (a busy device answers 'B'), so this means the link is
     broken. Also catchable as the builtin TimeoutError."""
+
+
+class OtaError(DynamiteError):
+    """Base for OTA update failures: a device refusal (NAK), an unexpected
+    reply, or a handshake timeout."""
+
+
+class OtaRejected(OtaError):
+    """The device NAK'd a handshake step: it declined to start the update,
+    or rejected the image at its final integrity check."""
+
+
+class OtaTimeout(OtaError, TimeoutError):
+    """No reply within the handshake timeout. The device answers every
+    handshake step (even with a NAK), so this means the link is broken.
+    Also catchable as the builtin TimeoutError."""

@@ -43,3 +43,9 @@ Options are:
 Example usage:
 
 `python stream.py --metrics --csv --socket '{"conversion":"volts_adc_ir"}'`
+
+## Script for OTA firmware updates `ota_update.py`
+
+Flashes a firmware image to a board over BLE.
+
+`python ota_update.py -f path/to/firmware.bin "device name"`
