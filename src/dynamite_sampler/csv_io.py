@@ -1,12 +1,10 @@
-"""dynamite-csv 1 files (docs/csv-format-v2.md): write and read.
+"""dynamite-csv 1 files (docs/csv-format-v2.md): writing.
 
-The format is self-contained: raw data plus everything needed to reproduce
-every converted value, without the app or the device. :class:`CsvRecorder`
+:class:`CsvRecorder`
 freezes the recording-start snapshot (device identity, KVS, calibration,
 tare) and converts each incoming block's raw counts itself, so a
-mid-recording KVS write or re-tare can never leak into the file.
-:func:`read_csv` returns the file as a :class:`Block`, converted columns
-verbatim (blank = NaN), never re-derived.
+mid-recording KVS write or re-tare can never leak into the file. The strict
+reference reader lives in the test suite (tests/test_csv.py)
 """
 
 import csv
@@ -243,120 +241,3 @@ class CsvRecorder:
 
     def __exit__(self, *exc):
         self.close()
-
-
-def read_csv(path) -> Block:
-    """A dynamite-csv 1 file as a :class:`Block`.
-
-    ``raw`` comes from the raw columns, ``data`` from the converted columns
-    verbatim (blank cells are NaN, covering both the dropped-sample row
-    pattern and the unit-unavailable column pattern), ``t`` is derived from
-    ``ssn`` and ``sample_rate_hz``, and ``host_time`` is NaN (a file-sourced
-    block never arrived over a link). Unknown columns and unknown metadata
-    fields are ignored. Container inconsistencies raise
-    :class:`CsvFormatError`.
-    """
-    with open(path, encoding="utf-8") as file:
-        lines = file.read().splitlines()
-    metadata = _parse_metadata(lines, path)
-    rows = [line for line in lines[2:] if line and not line.startswith("#")]
-    if not rows:
-        raise CsvFormatError(f"{path}: no column header")
-    parsed = list(csv.reader(rows))
-    header, body = parsed[0], parsed[1:]
-    raw_cols, data_cols, units = _parse_header(header, metadata, path)
-    n = len(raw_cols)
-
-    n_rows = len(body)
-    ssn_origin = metadata.get("ssn_origin")
-    if not isinstance(ssn_origin, int) or isinstance(ssn_origin, bool):
-        raise CsvFormatError(f"{path}: metadata ssn_origin must be an integer")
-    sample_rate = metadata.get("sample_rate_hz")
-    if not isinstance(sample_rate, (int, float)) or isinstance(sample_rate, bool):
-        raise CsvFormatError(f"{path}: metadata sample_rate_hz must be a number")
-
-    ssn = np.empty(n_rows, dtype=np.int64)
-    raw = np.full((n_rows, n), np.nan)
-    data = np.full((n_rows, n), np.nan)
-    for r, row in enumerate(body):
-        try:
-            ssn[r] = int(row[0])
-            for i in range(n):
-                if row[raw_cols[i]] != "":
-                    counts = int(row[raw_cols[i]])
-                    if not -(1 << 23) <= counts < (1 << 23):
-                        raise ValueError("count outside the 24-bit range")
-                    raw[r, i] = counts
-                if row[data_cols[i]] != "":
-                    data[r, i] = float(row[data_cols[i]])
-        except (ValueError, IndexError) as exc:
-            raise CsvFormatError(f"{path}: bad data row {r + 1}: {exc}") from None
-
-    if n_rows and ssn[0] != ssn_origin:
-        raise CsvFormatError(
-            f"{path}: ssn of row 0 ({ssn[0]}) != metadata ssn_origin ({ssn_origin})"
-        )
-    if np.any(np.diff(ssn) != 1):
-        raise CsvFormatError(f"{path}: non-contiguous ssn (rows lost in transit)")
-
-    return Block(
-        data=data,
-        raw=raw,
-        t=(ssn - ssn_origin) / sample_rate,
-        ssn0=ssn_origin,
-        units=units,
-        host_time=float("nan"),
-    )
-
-
-def _parse_metadata(lines: list[str], path) -> dict:
-    """The metadata line (line 2 is the only metadata; every comment line
-    after it is documentation and is ignored here)."""
-    if not lines or lines[0] != MAGIC:
-        raise CsvFormatError(f"{path}: not a dynamite-csv 1 file")
-    if len(lines) < 2 or not lines[1].startswith("# {"):
-        raise CsvFormatError(f"{path}: missing metadata line")
-    try:
-        metadata = json.loads(lines[1][2:])
-    except json.JSONDecodeError as exc:
-        raise CsvFormatError(f"{path}: bad metadata JSON: {exc}") from None
-    if metadata.get("format") != "dynamite-csv":
-        raise CsvFormatError(f"{path}: metadata format must be 'dynamite-csv'")
-    if metadata.get("version") != VERSION:
-        raise CsvFormatError(
-            f"{path}: unsupported dynamite-csv version {metadata.get('version')!r}"
-        )
-    return metadata
-
-
-def _parse_header(header: list[str], metadata: dict, path):
-    """Column layout from the header row: N raw + N converted (extra columns
-    after them are ignored, per the format's extensibility rule). Returns
-    ``(raw_col_indices, data_col_indices, units)``."""
-    if not header or header[0] != "ssn":
-        raise CsvFormatError(f"{path}: header must start with 'ssn'")
-    n = 0
-    while 1 + n < len(header) and header[1 + n] == f"ch{n}":
-        n += 1
-    if n == 0:
-        raise CsvFormatError(f"{path}: no raw channel columns in header")
-    converted = header[1 + n : 1 + 2 * n]
-    if len(converted) < n:
-        raise CsvFormatError(f"{path}: header has raw columns but no converted ones")
-    suffixes = set()
-    for i, name in enumerate(converted):
-        prefix, _, suffix = name.partition(f"ch{i}_")
-        if prefix or not suffix:
-            raise CsvFormatError(f"{path}: unexpected column {name!r}")
-        suffixes.add(suffix)
-    if len(suffixes) != 1:
-        raise CsvFormatError(f"{path}: mixed converted units in header")
-    units = suffixes.pop()
-    if units != metadata.get("converted_unit"):
-        raise CsvFormatError(
-            f"{path}: header unit {units!r} != metadata converted_unit "
-            f"{metadata.get('converted_unit')!r}"
-        )
-    raw_cols = list(range(1, 1 + n))
-    data_cols = list(range(1 + n, 1 + 2 * n))
-    return raw_cols, data_cols, units

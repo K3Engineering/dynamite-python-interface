@@ -8,7 +8,6 @@ Defaults to CSV + metrics + the TCP socket demo when nothing is selected.
 import argparse
 import datetime
 import socket
-import time
 
 import dynamite_sampler as dms
 from dynamite_sampler import gatt as ds
@@ -30,36 +29,9 @@ class CsvSink:
         self._recorder.close()
 
 
-class MetricsSink:
-    """Print sample-rate metrics on one line using \\r."""
-
-    def __init__(self, print_dt: float = 0.1):
-        self.print_dt = float(print_dt)
-        self._start = time.monotonic()
-        self._prev_print = self._start
-        self._rows_at_print = 0
-        self._rows = 0
-
-    def block(self, block):
-        now = time.monotonic()
-        self._rows += block.raw.shape[0]
-        interval = now - self._prev_print
-        if interval > self.print_dt:
-            rate = (self._rows - self._rows_at_print) / interval
-            print(
-                f"[{datetime.timedelta(seconds=now - self._start)}] "
-                f"{self._rows:10} samples, {rate:6.1f} samples/sec ",
-                end="\r",
-            )
-            self._prev_print = now
-            self._rows_at_print = self._rows
-
-    def close(self):
-        print()
-
-
 class TqdmSink:
-    """Show sample progress with TQDM."""
+    """Show live sample count and rate with TQDM (elapsed time, smoothed
+    samples/sec, and the single-line \\r display are all built in)."""
 
     def __init__(self):
         from tqdm import tqdm
@@ -159,7 +131,9 @@ def main() -> None:
         help="converted unit for the CSV recording (raw, mV/V, mV, kgf, N, kN, lbf)",
     )
     parser.add_argument(
-        "--metrics", action="store_true", help="print sample-rate metrics"
+        "--metrics",
+        action="store_true",
+        help="show a live sample-rate bar (TQDM; equivalent to --tqdm)",
     )
     parser.add_argument("--tqdm", action="store_true", help="show a TQDM sample bar")
     parser.add_argument(
@@ -181,10 +155,8 @@ def main() -> None:
         sinks = []
         if args.csv is not None:
             sinks.append(CsvSink(dev, args.csv, units=args.units))
-        if args.tqdm:
+        if args.metrics or args.tqdm:
             sinks.append(TqdmSink())
-        if args.metrics:
-            sinks.append(MetricsSink())
         if args.socket:
             sinks.append(SocketSink(dev))
 

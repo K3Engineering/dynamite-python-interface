@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from dynamite_sampler.device import (
 from dynamite_sampler.errors import (
     ConnectionLost,
     DynamiteError,
+    MultipleDevicesFound,
     ReadTimeout,
     StreamActive,
 )
@@ -76,21 +78,16 @@ def test_ssn_unwrap_handles_rollover():
     assert unwrapper.unwrap(2, 1) == (65538, 1)
 
 
-def test_stream_inserts_nan_gap_rows_and_arithmetic_time():
+async def test_stream_inserts_nan_gap_rows_and_arithmetic_time():
     client = FakeClient()
     device = make_device(client)
-
-    async def run():
-        agen = device.stream(blocksize=3, units="raw")
-        pending = asyncio.ensure_future(agen.__anext__())
-        await wait_notify(client)
-        client.notify(None, packet(10, [[1, 2, 3, 4], [5, 6, 7, 8]]))
-        client.notify(None, packet(13, [[9, 10, 11, 12]]))  # one dropped
-        block = await pending
-        await agen.aclose()
-        return block
-
-    block = asyncio.run(run())
+    agen = device.stream(blocksize=3, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    client.notify(None, packet(10, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+    client.notify(None, packet(13, [[9, 10, 11, 12]]))  # one dropped
+    block = await pending
+    await agen.aclose()
     assert block.raw.shape == (3, 4)
     assert block.ssn0 == 10
     assert np.allclose(block.t, [0.0, 0.001, 0.002])
@@ -98,20 +95,15 @@ def test_stream_inserts_nan_gap_rows_and_arithmetic_time():
     assert np.all(np.isnan(block.data[2]))
 
 
-def test_stream_converts_units():
+async def test_stream_converts_units():
     client = FakeClient()
     device = make_device(client)
-
-    async def run():
-        agen = device.stream(blocksize=2, units="raw")
-        pending = asyncio.ensure_future(agen.__anext__())
-        await wait_notify(client)
-        client.notify(None, packet(0, [[100, 200, 300, 400], [1, 2, 3, 4]]))
-        block = await pending
-        await agen.aclose()
-        return block
-
-    block = asyncio.run(run())
+    agen = device.stream(blocksize=2, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    client.notify(None, packet(0, [[100, 200, 300, 400], [1, 2, 3, 4]]))
+    block = await pending
+    await agen.aclose()
     assert np.array_equal(block.data, block.raw)
     assert block.units == "raw"
 
@@ -130,107 +122,84 @@ class FakePowerClient(FakeClient):
         self.power = int.from_bytes(bytes(data), signed=True)
 
 
-def test_tx_power_read_and_verified_set():
+async def test_tx_power_read_and_verified_set():
     client = FakePowerClient(-6)
     device = make_device(client)
-    assert asyncio.run(device.read_tx_power_dbm()) == -6
-    assert asyncio.run(device.set_tx_power(-9)) == -9
+    assert await device.read_tx_power_dbm() == -6
+    assert await device.set_tx_power(-9) == -9
     assert client.writes == [(TxPower.TxPowerSet.UUID, bytes([0xF7]))]
 
 
-def test_set_tx_power_readback_mismatch_raises():
+async def test_set_tx_power_readback_mismatch_raises():
     class StuckClient(FakePowerClient):
         async def write_gatt_char(self, uuid, data, response=True):
             pass  # the set never takes effect
 
     device = make_device(StuckClient(0))
     with pytest.raises(DynamiteError, match="read-back"):
-        asyncio.run(device.set_tx_power(-9))
+        await device.set_tx_power(-9)
 
 
-def test_read_returns_one_block_across_packets():
+async def test_read_returns_one_block_across_packets():
     client = FakeClient()
     device = make_device(client)
-
-    async def run():
-        pending = asyncio.ensure_future(device.read(5, units="raw"))
-        await wait_notify(client)
-        client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]))
-        client.notify(None, packet(3, [[13, 14, 15, 16], [17, 18, 19, 20]]))
-        return await pending
-
-    block = asyncio.run(run())
+    pending = asyncio.ensure_future(device.read(5, units="raw"))
+    await wait_notify(client)
+    client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]))
+    client.notify(None, packet(3, [[13, 14, 15, 16], [17, 18, 19, 20]]))
+    block = await pending
     assert block.raw.shape == (5, 4)
     assert block.ssn0 == 0
     assert np.allclose(block.t, [0.0, 0.001, 0.002, 0.003, 0.004])
 
 
-def test_read_times_out_without_rows():
+async def test_read_times_out_without_rows():
     client = FakeClient()
     device = make_device(client)
-
-    async def run():
-        with pytest.raises(ReadTimeout):
-            await device.read(5, units="raw", timeout=0.05)
-
-    asyncio.run(run())
+    with pytest.raises(ReadTimeout):
+        await device.read(5, units="raw", timeout=0.05)
 
 
-def test_block_host_time_is_first_packet():
-    import time
-
+async def test_block_host_time_is_first_packet():
     client = FakeClient()
     device = make_device(client)
-
-    async def run():
-        agen = device.stream(blocksize=3, units="raw")
-        pending = asyncio.ensure_future(agen.__anext__())
-        await wait_notify(client)
-        t0 = time.monotonic()
-        client.notify(None, packet(0, [[1, 2, 3, 4]]))  # first packet
-        await asyncio.sleep(0.02)  # let _assemble process it
-        t1 = time.monotonic()
-        client.notify(None, packet(1, [[5, 6, 7, 8], [9, 10, 11, 12]]))
-        block = await pending
-        await agen.aclose()
-        return t0, t1, block
-
-    t0, t1, block = asyncio.run(run())
+    agen = device.stream(blocksize=3, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    t0 = time.monotonic()
+    client.notify(None, packet(0, [[1, 2, 3, 4]]))  # first packet
+    await asyncio.sleep(0.02)  # let _assemble process it
+    t1 = time.monotonic()
+    client.notify(None, packet(1, [[5, 6, 7, 8], [9, 10, 11, 12]]))
+    block = await pending
+    await agen.aclose()
     assert t0 <= block.host_time < t1
 
 
-def test_stream_connection_lost_mid_stream():
+async def test_stream_connection_lost_mid_stream():
     client = FakeClient()
     event = asyncio.Event()
     device = make_device(client, disconnected=event)
-
-    async def run():
-        agen = device.stream(blocksize=3, units="raw")
-        pending = asyncio.ensure_future(agen.__anext__())
-        await wait_notify(client)
-        event.set()
-        with pytest.raises(ConnectionLost):
-            await pending
-        await agen.aclose()
-
-    asyncio.run(run())
+    agen = device.stream(blocksize=3, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    event.set()
+    with pytest.raises(ConnectionLost):
+        await pending
+    await agen.aclose()
 
 
-def test_second_stream_while_active_raises():
+async def test_second_stream_while_active_raises():
     client = FakeClient()
     device = make_device(client)
-
-    async def run():
-        agen = device.stream(blocksize=3, units="raw")
-        pending = asyncio.ensure_future(agen.__anext__())
-        await wait_notify(client)
-        with pytest.raises(StreamActive):
-            await device.stream(blocksize=3, units="raw").__anext__()
-        pending.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await pending
-
-    asyncio.run(run())
+    agen = device.stream(blocksize=3, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    with pytest.raises(StreamActive):
+        await device.stream(blocksize=3, units="raw").__anext__()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
 
 
 class _StubAsync:
@@ -276,36 +245,34 @@ def test_sync_run_after_close_raises():
         _stop_facade(loop, thread)
 
 
-def test_find_single_accepts_found_device(monkeypatch):
+async def test_find_single_accepts_found_device(monkeypatch):
     device = discovery.FoundDevice("D4:5E:AA:BB:CC:DD", "ds", -50)
 
     async def fake_find_by_address(address):
         return device if address.upper() == device.address.upper() else None
 
     monkeypatch.setattr(discovery, "_find_by_address", fake_find_by_address)
-    assert asyncio.run(discovery.find_single(device)) is device
-    assert asyncio.run(discovery.find_single("d4:5e:aa:bb:cc:dd")) is device
+    assert await discovery.find_single(device) is device
+    assert await discovery.find_single("d4:5e:aa:bb:cc:dd") is device
 
 
-def test_find_single_no_address_requires_exactly_one(monkeypatch):
+async def test_find_single_no_address_requires_exactly_one(monkeypatch):
     devices = [discovery.FoundDevice("AA:BB:CC:DD:EE:FF", "ds", -50)]
 
     async def one(timeout=0):
         return devices
 
     monkeypatch.setattr(discovery, "discover", one)
-    assert asyncio.run(discovery.find_single()) is devices[0]
+    assert await discovery.find_single() is devices[0]
 
     async def many(timeout=0):
         return devices + [discovery.FoundDevice("11:22:33:44:55:66", "ds2", -60)]
 
-    from dynamite_sampler.errors import MultipleDevicesFound
-
     monkeypatch.setattr(discovery, "discover", many)
     with pytest.raises(MultipleDevicesFound):
-        asyncio.run(discovery.find_single())
+        await discovery.find_single()
 
 
-def test_find_single_rejects_other_types(monkeypatch):
+async def test_find_single_rejects_other_types(monkeypatch):
     with pytest.raises(TypeError):
-        asyncio.run(discovery.find_single(42))
+        await discovery.find_single(42)
