@@ -10,7 +10,7 @@ import yaml
 import dynamite_sampler as dms
 from dynamite_sampler.block import Block
 from dynamite_sampler.calibration import Calibration
-from dynamite_sampler.csv_io import MAGIC, CsvRecorder, _to_json, yaml_lines
+from dynamite_sampler.csv_io import MAGIC, CsvRecorder, _json_line, _yaml_lines
 from dynamite_sampler.device import DeviceInfo
 from dynamite_sampler.errors import (
     CsvFormatError,
@@ -192,15 +192,15 @@ ssn,ch0,ch1,ch2,ch3,ch0_kgf,ch1_kgf,ch2_kgf,ch3_kgf
 
 
 def test_worked_example_json_renders_byte_identically():
-    """The JSON emitter and the number formatter: the doc's worked example
-    re-rendered is the doc's machine line, verbatim."""
-    assert _to_json(EXAMPLE_METADATA) == _EXAMPLE_JSON
+    """The writer's encoder re-renders the doc's worked example as the
+    doc's machine line, verbatim."""
+    assert _json_line(EXAMPLE_METADATA) == _EXAMPLE_JSON
 
 
 def test_metadata_yaml_block_round_trips():
     """The YAML block is derived documentation (implementation-defined):
     reloading it yields the same metadata object."""
-    block = "\n".join("# " + line for line in yaml_lines(EXAMPLE_METADATA))
+    block = "\n".join("# " + line for line in _yaml_lines(EXAMPLE_METADATA))
     reloaded = yaml.safe_load("\n".join(line[2:] for line in block.splitlines()))
     assert reloaded == EXAMPLE_METADATA
 

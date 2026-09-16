@@ -35,12 +35,10 @@ except importlib.metadata.PackageNotFoundError:  # not installed (editable src)
 _GENERATOR = f"dynamite-sampler-py {_PACKAGE_VERSION}"
 
 
-def _to_json(value) -> str:
-    """The metadata line's machine form: compact one-line JSON. Number
-    spelling is whatever the stdlib emits (csv-format-v2.md §The two
-    renderings); non-finite floats raise (allow_nan=False), as JSON has
-    no literal for them."""
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+def _json_line(metadata: dict) -> str:
+    return json.dumps(
+        metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
 
 
 _YAML_WIDTH = 1_000_000
@@ -53,10 +51,9 @@ class _YamlDumper(yaml.SafeDumper):
         return super().increase_indent(flow, indentless=False)
 
 
-def yaml_lines(metadata: dict) -> list[str]:
-    """The YAML rendering of the metadata object (csv-format-v2.md §The two
-    renderings): derived documentation, implementation-defined; the JSON
-    line stays the only machine form, so consumers must not parse this."""
+def _yaml_lines(metadata: dict) -> list[str]:
+    """The YAML rendering of the metadata object: derived documentation
+    (csv-format-v2.md §The two renderings); consumers must not parse it."""
     text = yaml.dump(
         metadata,
         Dumper=_YamlDumper,
@@ -189,8 +186,8 @@ class CsvRecorder:
         # newline="": line endings are written explicitly ("\n" only).
         self._file = open(self._path, "w", encoding="utf-8", newline="")
         self._file.write(MAGIC + "\n")
-        self._file.write("# " + _to_json(metadata) + "\n")
-        for line in yaml_lines(metadata):
+        self._file.write("# " + _json_line(metadata) + "\n")
+        for line in _yaml_lines(metadata):
             self._file.write("# " + line + "\n")
         raw_cols = ",".join(f"ch{i}" for i in range(self._n))
         data_cols = ",".join(f"ch{i}_{self._units}" for i in range(self._n))
