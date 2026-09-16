@@ -170,8 +170,9 @@ class CsvRecorder:
             )
         return channels
 
-    def _open(self, ssn_origin: int) -> None:
-        metadata = {
+    def _metadata(self, ssn_origin: int) -> dict:
+        """The line-2 metadata object for this recording."""
+        return {
             "format": "dynamite-csv",
             "version": VERSION,
             "generator": _GENERATOR,
@@ -183,6 +184,9 @@ class CsvRecorder:
             "device": self._device,
             "channels": self._channels,
         }
+
+    def _open(self, ssn_origin: int) -> None:
+        metadata = self._metadata(ssn_origin)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # newline="": line endings are written explicitly ("\n" only).
         self._file = open(self._path, "w", encoding="utf-8", newline="")
