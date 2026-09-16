@@ -48,4 +48,10 @@ Example usage:
 
 Flashes a firmware image to a board over BLE.
 
-`python ota_update.py -f path/to/firmware.bin "device name"`
+`python ota_update.py -f path/to/firmware.bin "device name"` — flash a local image
+
+`python ota_update.py --check "device name"` — report installed vs channel target
+
+`python ota_update.py --latest "device name"` — download, verify (size + SHA-256), and flash the channel target
+
+`--channel beta` opts `--check`/`--latest` into GitHub prereleases (default: stable).

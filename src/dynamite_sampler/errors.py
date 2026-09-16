@@ -111,3 +111,9 @@ class OtaTimeout(OtaError, TimeoutError):
     """No reply within the handshake timeout. The device answers every
     handshake step (even with a NAK), so this means the link is broken.
     Also catchable as the builtin TimeoutError."""
+
+
+class FirmwareCatalogError(DynamiteError):
+    """A firmware-release catalog failure: the check/download request, the
+    API payload, or the image's size/checksum verification. Surfaced as-is,
+    never read as 'up to date'."""
