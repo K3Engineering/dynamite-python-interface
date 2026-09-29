@@ -341,6 +341,57 @@ class Calibration:
             group,
         )
 
+    @classmethod
+    def from_metadata(
+        cls, metadata: Mapping, n_channels: int | None = None
+    ) -> "Calibration":
+        """Rebuild from a dynamite-csv metadata object.
+
+        The conversion inputs live in ``device.afe`` (nominals) and
+        ``channels[i].board_cal`` / ``channels[i].load_cell``; the rest of
+        the metadata object stays verbatim on the ``Recording``. Tolerant
+        by construction (these files come from the app as well as this
+        package): a missing/device-less ``afe`` block means an
+        unprovisioned board (only ``raw`` converts), and missing
+        ``channels`` mean one bare slot per ``n_channels``.
+        """
+        afe = (metadata.get("device") or {}).get("afe") or {}
+        nominals = None
+        if afe.get("adc_ref_v") is not None:
+            nominals = BoardNominals(
+                adc_fsr_v=afe["adc_ref_v"],
+                afe_gain=afe["front_end_gain"],
+                excitation_v=afe["excitation_v"],
+                pga_gains=afe.get("adc_gain"),
+                provenance={},
+            )
+        entries = metadata.get("channels")
+        if entries is None:
+            entries = [{} for _ in range(n_channels or ADC_CHANNEL_COUNT)]
+        boards = []
+        load_cells = []
+        for i, entry in enumerate(entries):
+            board_cal = entry.get("board_cal")
+            if nominals is None:
+                boards.append(None)
+            elif board_cal is None:
+                boards.append(ChannelBoard(nominals, i))
+            else:
+                boards.append(
+                    ChannelBoard(nominals, i, board_cal.get("r"), board_cal.get("raw"))
+                )
+            cell = entry.get("load_cell")
+            load_cells.append(
+                None
+                if cell is None
+                else LoadCell(
+                    cell.get("name") or "",
+                    cell["capacity_kg"],
+                    cell["sensitivity_mv_v"],
+                )
+            )
+        return cls(boards, load_cells, nominals, None)
+
     @property
     def board(self):
         """Per-channel raw -> mV/V map (``ChannelBoard | None``)."""
@@ -401,6 +452,16 @@ class Calibration:
             return self.nominals.excitation_v
         return FORCE_FACTORS[units] * self.load_cells[channel].kgf_per_mv_v
 
+    @staticmethod
+    def _channel_tare(tare_raw, i):
+        """The tare for channel ``i``; a NaN slot means "no tare on this
+        channel" (a recording tared on only some channels): that channel
+        is gross."""
+        if tare_raw is None:
+            return None
+        tare = np.asarray(tare_raw, dtype=np.float64)[i]
+        return None if np.isnan(tare) else tare
+
     def convert(self, raw, units: str, tare_raw=None) -> np.ndarray:
         """Convert absolute raw counts to ``units``, net of ``tare_raw``.
 
@@ -413,10 +474,13 @@ class Calibration:
         if units == "raw":
             if tare_raw is None:
                 return raw.copy()
-            return raw - np.asarray(tare_raw, dtype=np.float64)
+            tare = np.where(
+                np.isnan(tare_raw), 0.0, np.asarray(tare_raw, dtype=np.float64)
+            )
+            return raw - tare
         out = np.empty_like(raw)
         for i, channel in enumerate(self._channels):
-            tare = None if tare_raw is None else np.asarray(tare_raw)[i]
+            tare = self._channel_tare(tare_raw, i)
             tare_mvv = 0.0 if tare is None else channel.mvv(tare)
             out[..., i] = (channel.mvv(raw[..., i]) - tare_mvv) * self._scale_per_mvv(
                 i, units

@@ -23,3 +23,11 @@ class Block:
     units: str
     host_time: float
     rows_dropped: int = 0
+
+    def __len__(self) -> int:
+        """Row count: how many samples of the timeline the block spans."""
+        return self.raw.shape[0]
+
+    @property
+    def n_channels(self) -> int:
+        return self.raw.shape[1]

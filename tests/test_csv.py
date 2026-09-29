@@ -1,8 +1,8 @@
-"""dynamite-csv write (csv_io) and read (test-side reader below), driven
-by the format doc's worked example and the package's own recorder, no BLE
-required."""
+"""dynamite-csv write and read (csv_io), driven by the format doc's worked
+example and the package's own recorder, no BLE required. The regeneration
+checks verify self-containment: quartet 2 rebuilds from quartet 1 plus the
+metadata line."""
 
-import csv
 import json
 import math
 from pathlib import Path
@@ -12,143 +12,20 @@ import pytest
 import yaml
 
 from dynamite_sampler.block import Block
-from dynamite_sampler.calibration import (
-    FORCE_FACTORS,
-    BoardNominals,
-    Calibration,
-    ChannelBoard,
-    LoadCell,
+from dynamite_sampler.calibration import FORCE_FACTORS, Calibration
+from dynamite_sampler.csv_io import (
+    MAGIC,
+    CsvRecorder,
+    _json_line,
+    _yaml_lines,
+    read_csv,
 )
-from dynamite_sampler.csv_io import MAGIC, CsvRecorder, _json_line, _yaml_lines
 from dynamite_sampler.device import DeviceInfo
 from dynamite_sampler.errors import (
     CsvFormatError,
     DynamiteError,
     UnitUnavailable,
 )
-
-# --- Test-side reader --------------------------------------------------------
-#
-# csv_io has no reader: nothing outside this suite reads these files, so the
-# reference implementation lives with the format checks.
-
-
-def read_csv(path) -> Block:
-    """A dynamite-csv 1 file as a :class:`Block`, strict.
-
-    ``raw`` comes from the raw columns, ``data`` from the converted columns
-    verbatim (blank cells are NaN, covering both the dropped-sample row
-    pattern and the unit-unavailable column pattern), ``t`` is derived from
-    ``ssn`` and ``sample_rate_hz``, and ``host_time`` is NaN (a file-sourced
-    block never arrived over a link). Unknown columns and unknown metadata
-    fields are ignored. Container inconsistencies raise
-    :class:`CsvFormatError`.
-    """
-    with open(path, encoding="utf-8") as file:
-        lines = file.read().splitlines()
-    metadata = _parse_metadata(lines, path)
-    rows = [line for line in lines[2:] if line and not line.startswith("#")]
-    if not rows:
-        raise CsvFormatError(f"{path}: no column header")
-    parsed = list(csv.reader(rows))
-    header, body = parsed[0], parsed[1:]
-    raw_cols, data_cols, units = _parse_header(header, metadata, path)
-    n = len(raw_cols)
-
-    n_rows = len(body)
-    ssn_origin = metadata.get("ssn_origin")
-    if not isinstance(ssn_origin, int) or isinstance(ssn_origin, bool):
-        raise CsvFormatError(f"{path}: metadata ssn_origin must be an integer")
-    sample_rate = metadata.get("sample_rate_hz")
-    if not isinstance(sample_rate, (int, float)) or isinstance(sample_rate, bool):
-        raise CsvFormatError(f"{path}: metadata sample_rate_hz must be a number")
-
-    ssn = np.empty(n_rows, dtype=np.int64)
-    raw = np.full((n_rows, n), np.nan)
-    data = np.full((n_rows, n), np.nan)
-    for r, row in enumerate(body):
-        try:
-            ssn[r] = int(row[0])
-            for i in range(n):
-                if row[raw_cols[i]] != "":
-                    counts = int(row[raw_cols[i]])
-                    if not -(1 << 23) <= counts < (1 << 23):
-                        raise ValueError("count outside the 24-bit range")
-                    raw[r, i] = counts
-                if row[data_cols[i]] != "":
-                    data[r, i] = float(row[data_cols[i]])
-        except (ValueError, IndexError) as exc:
-            raise CsvFormatError(f"{path}: bad data row {r + 1}: {exc}") from None
-
-    if n_rows and ssn[0] != ssn_origin:
-        raise CsvFormatError(
-            f"{path}: ssn of row 0 ({ssn[0]}) != metadata ssn_origin ({ssn_origin})"
-        )
-    if np.any(np.diff(ssn) != 1):
-        raise CsvFormatError(f"{path}: non-contiguous ssn (rows lost in transit)")
-
-    return Block(
-        data=data,
-        raw=raw,
-        t=(ssn - ssn_origin) / sample_rate,
-        ssn0=ssn_origin,
-        units=units,
-        host_time=float("nan"),
-    )
-
-
-def _parse_metadata(lines: list[str], path) -> dict:
-    """The metadata line (line 2 is the only metadata; every comment line
-    after it is documentation and is ignored here)."""
-    if not lines or lines[0] != MAGIC:
-        raise CsvFormatError(f"{path}: not a dynamite-csv 1 file")
-    if len(lines) < 2 or not lines[1].startswith("# {"):
-        raise CsvFormatError(f"{path}: missing metadata line")
-    try:
-        metadata = json.loads(lines[1][2:])
-    except json.JSONDecodeError as exc:
-        raise CsvFormatError(f"{path}: bad metadata JSON: {exc}") from None
-    if metadata.get("format") != "dynamite-csv":
-        raise CsvFormatError(f"{path}: metadata format must be 'dynamite-csv'")
-    if metadata.get("version") != 1:
-        raise CsvFormatError(
-            f"{path}: unsupported dynamite-csv version {metadata.get('version')!r}"
-        )
-    return metadata
-
-
-def _parse_header(header: list[str], metadata: dict, path):
-    """Column layout from the header row: N raw + N converted (extra columns
-    after them are ignored, per the format's extensibility rule). Returns
-    ``(raw_col_indices, data_col_indices, units)``."""
-    if not header or header[0] != "ssn":
-        raise CsvFormatError(f"{path}: header must start with 'ssn'")
-    n = 0
-    while 1 + n < len(header) and header[1 + n] == f"ch{n}":
-        n += 1
-    if n == 0:
-        raise CsvFormatError(f"{path}: no raw channel columns in header")
-    converted = header[1 + n : 1 + 2 * n]
-    if len(converted) < n:
-        raise CsvFormatError(f"{path}: header has raw columns but no converted ones")
-    suffixes = set()
-    for i, name in enumerate(converted):
-        prefix, _, suffix = name.partition(f"ch{i}_")
-        if prefix or not suffix:
-            raise CsvFormatError(f"{path}: unexpected column {name!r}")
-        suffixes.add(suffix)
-    if len(suffixes) != 1:
-        raise CsvFormatError(f"{path}: mixed converted units in header")
-    units = suffixes.pop()
-    if units != metadata.get("converted_unit"):
-        raise CsvFormatError(
-            f"{path}: header unit {units!r} != metadata converted_unit "
-            f"{metadata.get('converted_unit')!r}"
-        )
-    raw_cols = list(range(1, 1 + n))
-    data_cols = list(range(1 + n, 1 + 2 * n))
-    return raw_cols, data_cols, units
-
 
 # --- The worked example from docs/csv-format-v2.md, verbatim --------------
 
@@ -458,8 +335,8 @@ def test_recorder_round_trip(tmp_path):
     recorder = CsvRecorder(dev, path, units="mV/V")
     rows_a = [[1000, -2000, 300000, -400000], [np.nan] * 4, [5, 6, 7, 8]]
     rows_b = [[9, 10, 11, 12]]
-    recorder.write_block(_block(rows_a, 100))
-    recorder.write_block(_block(rows_b, 103))
+    recorder.write(_block(rows_a, 100))
+    recorder.write(_block(rows_b, 103))
     recorder.close()
 
     block = read_csv(path)
@@ -480,9 +357,9 @@ def test_recorder_round_trip(tmp_path):
 def test_recorder_rejects_noncontiguous_block(tmp_path):
     dev = _FakeDev([1, 1, 1, 1], {"F": dict(_NOMINAL_FACTORY), "U": {}})
     recorder = CsvRecorder(dev, tmp_path / "rec.csv")
-    recorder.write_block(_block([[1, 2, 3, 4]], 50))
+    recorder.write(_block([[1, 2, 3, 4]], 50))
     with pytest.raises(CsvFormatError, match="non-contiguous"):
-        recorder.write_block(_block([[1, 2, 3, 4]], 60))
+        recorder.write(_block([[1, 2, 3, 4]], 60))
     recorder.close()
 
 
@@ -503,7 +380,7 @@ def test_two_channel_round_trip(tmp_path):
     dev = _FakeDev([1, 1], {"F": dict(_NOMINAL_FACTORY), "U": {}})
     path = tmp_path / "rec.csv"
     with CsvRecorder(dev, path) as recorder:
-        recorder.write_block(_block([[1, 2], [3, 4]], 7))
+        recorder.write(_block([[1, 2], [3, 4]], 7))
     block = read_csv(path)
     assert block.raw.shape == (2, 2)
     assert block.data.shape == (2, 2)
@@ -533,49 +410,14 @@ def _record(tmp_path, unit, snapshot, tare_raw):
     dev = _FakeDev([1, 1, 1, 1], snapshot, tare_raw=tare_raw)
     path = tmp_path / "rec.csv"
     with CsvRecorder(dev, path, units=unit) as recorder:
-        recorder.write_block(
+        recorder.write(
             _block(
                 [[1000, -2000, 300000, -400000], [np.nan] * 4, [5, 6, 7, 8]],
                 41230,
             )
         )
-        recorder.write_block(_block([[9, 10, 11, 12]], 41233))
+        recorder.write(_block([[9, 10, 11, 12]], 41233))
     return path
-
-
-def _calibration_from_metadata(metadata):
-    """A Calibration rebuilt from a file's metadata line: channel boards
-    from ``board_cal`` or the afe block (a board-less file has no boards),
-    load cells per ``channels[]``."""
-    afe = metadata["device"]["afe"]
-    nominals = None
-    if afe["adc_ref_v"] is not None:
-        nominals = BoardNominals(
-            adc_fsr_v=afe["adc_ref_v"],
-            afe_gain=afe["front_end_gain"],
-            excitation_v=afe["excitation_v"],
-            pga_gains=afe["adc_gain"],
-            provenance={},
-        )
-    boards = []
-    load_cells = []
-    for i, entry in enumerate(metadata["channels"]):
-        board_cal = entry["board_cal"]
-        if nominals is None:
-            boards.append(None)
-        elif board_cal is None:
-            boards.append(ChannelBoard(nominals, i))
-        else:
-            boards.append(ChannelBoard(nominals, i, board_cal["r"], board_cal["raw"]))
-        cell = entry["load_cell"]
-        load_cells.append(
-            None
-            if cell is None
-            else LoadCell(
-                cell["name"] or "", cell["capacity_kg"], cell["sensitivity_mv_v"]
-            )
-        )
-    return Calibration(boards, load_cells, nominals, None)
 
 
 def _doc_scale_per_mvv(cell, unit, excitation_v):
@@ -617,7 +459,7 @@ def regenerate_check(path):
     rows = [line.split(",") for line in lines[2:] if line and not line.startswith("#")]
     n = (len(rows[0]) - 1) // 2
     try:
-        calibration = _calibration_from_metadata(metadata)
+        calibration = Calibration.from_metadata(metadata, n_channels=n)
         tares = [entry["tare_raw"] for entry in metadata["channels"]]
     except (KeyError, TypeError, AttributeError) as exc:
         raise CsvFormatError(

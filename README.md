@@ -4,28 +4,41 @@ Python interface for the Dynamite sampler board.
 
 ## Library `dynamite_sampler`
 
-A Bleak library for the Dynamite sampler, in two layers:
+A Bleak library for the Dynamite sampler. Three entry points:
 
-- **Blocks** (`dev.stream()`, `dev.read()`): fixed-size windows of samples on a
-  continuous timeline — dropped samples arrive as NaN rows counted in
-  `block.rows_dropped`. This is the data plane: record it, convert it, plot it.
-- **Packets** (`dev.stream_packets()`): one item per BLE notification, with
-  arrival time, payload size, and dropped-row count. This is the layer
-  underneath, for per-packet latency and link metrics.
+- **Files** (`dms.read_csv(path)`): a recorded `dynamite-csv` file (from the
+  app or this package) as a `Recording` — rows, units, and the calibration
+  rebuilt from the header, so it re-converts and re-tares without a device:
+  `rec.convert("N")`, `rec.to_dataframe()`, `rec.to_csv("out.csv")`.
+- **Captures** (`dev.read(n=..., units=...)`, `dev.recording(...)`): a
+  capture returns that same `Recording`; `dev.recording()` is the open-ended
+  form — a background capture that keeps the partial data when you Ctrl+C:
+
+  ```python
+  import dynamite_sampler as dms
+
+  with dms.connect() as dev:
+      rec = dev.read(seconds=10, units="kgf")
+  rec.to_csv("run.csv")
+  ```
+- **Streams** (`dev.stream()`, `dev.stream_packets()`): live processing.
+  Blocks are fixed-size windows of samples on a continuous timeline —
+  dropped samples arrive as NaN rows counted in `block.rows_dropped`;
+  packets are one item per BLE notification, with arrival time, payload
+  size, and dropped-row count, for per-packet latency, closed-loop control,
+  and link metrics.
 
 Blocks are assembled from packets: `BlockAssembler` is public (windowing
 only — it folds raw packets into raw blocks, no calibration involved), so a
 script that needs both layers can iterate `dev.stream_packets()` and feed a
-`BlockAssembler` itself (see `stream.py`).
+`dev.assembler()` itself (see `stream.py`).
 
-Sticking to the happy path, the synchronous facade is enough:
-
-```python
-import dynamite_sampler as dms
-
-with dms.connect() as dev:
-    block = dev.read(n=1000, units="mV/V")
-```
+The synchronous facade is enough for most scripts. Two notes: the sync
+`stream()` blocks the calling thread (for background acquisition use
+`dev.recording()`, for a GUI event loop use a thread + queue or the async
+class), and the sync `stream_packets()` pays a cross-thread hop per packet —
+latency-sensitive code should take `AsyncDynamiteSampler` (`dms.aconnect()`)
+directly.
 
 ## Script to stream data to various sources `stream.py`
 
@@ -37,6 +50,7 @@ This script implements various streaming sinks:
   given; `--units` selects the converted column).
 - `--socket`: stream to localhost sockets for plotting with Waveforms.
 - `--txpwr N`: set the BLE TX power of the board before streaming.
+- `--blocksize N`: rows per assembled block (default 100).
 
 With no flags it runs metrics + socket + CSV recording.
 

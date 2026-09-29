@@ -3,6 +3,7 @@
 import asyncio
 import concurrent.futures
 import dataclasses
+import datetime
 import threading
 import time
 
@@ -10,8 +11,8 @@ import bleak
 import numpy as np
 
 from .assemble import BlockAssembler, _blocks_from_packets
-from .block import Block
-from .calibration import Calibration
+from .calibration import Calibration, Unit
+from .csv_io import _GENERATOR, CsvRecorder, device_metadata
 from .discovery import find_single
 from .errors import (
     BufferOverrun,
@@ -27,6 +28,7 @@ from .errors import (
 from .gatt import DeviceInformation, DynamiteSamplerService, TxPower
 from .kvs import Kvs
 from .packet import Packet
+from .recording import Recording
 from .ssn import SsnUnwrapper
 
 ADCConfig = DynamiteSamplerService.ADCConfig
@@ -168,12 +170,17 @@ class AsyncDynamiteSampler:
             self.calibration = None
             self._calibration_error = exc
 
-    def require_calibration(self) -> Calibration:
+    def _require_calibration(self) -> Calibration:
         """The current calibration, raising its deferred error if a KVS write
         left it invalid."""
         if self._calibration_error is not None:
             raise self._calibration_error
         return self.calibration
+
+    def assembler(self, blocksize: int = DEFAULT_BLOCKSIZE) -> BlockAssembler:
+        """A :class:`BlockAssembler` for this device's sample rate."""
+        config = self._require_adc()
+        return BlockAssembler(config.sample_rate, blocksize)
 
     def _require_adc(self):
         if self._adc_config is None:
@@ -207,18 +214,25 @@ class AsyncDynamiteSampler:
             )
         return readback
 
-    async def stream_packets(self, inactivity_timeout: float | None = None):
-        """Infinite async generator of :class:`Packet`: the raw feed, one
-        item per BLE notification.
+    async def stream_packets(
+        self, units: Unit = "raw", inactivity_timeout: float | None = None
+    ):
+        """Infinite async generator of :class:`Packet`: one item per BLE
+        notification.
 
-        The packet layer beneath :meth:`stream`: consume it directly for
-        per-packet latency or link metrics, folding it into blocks with
-        your own :class:`BlockAssembler` when both are needed. Packets are
-        raw counts only; no calibration is required. ``inactivity_timeout``
-        raises :class:`ReadTimeout` after that many seconds without a
-        packet.
+        The layer beneath :meth:`stream`: consume it directly for
+        per-packet latency (closed-loop control), link metrics, or both,
+        folding it into blocks with your own :class:`BlockAssembler` (or
+        :meth:`assembler`) when blocks are needed too. ``raw`` is always
+        counts; ``data``/``units`` are the converted view — the packet
+        layer is not raw-only, so a control loop can run in force. The
+        calibration is frozen at the stream's start; ``tare_raw`` is read
+        per packet. ``inactivity_timeout`` raises :class:`ReadTimeout`
+        after that many seconds without a packet.
         """
         config = self._require_adc()
+        calibration = self._require_calibration()
+        calibration.check_units(units)
         if self._active:
             raise StreamActive("a stream or read is already active")
         self._active = True
@@ -253,6 +267,8 @@ class AsyncDynamiteSampler:
                     rows_dropped=missed,
                     payload_bytes=len(data),
                     raw=samples,
+                    data=calibration.convert(samples, units, self.tare_raw),
+                    units=units,
                 )
         finally:
             disc.cancel()
@@ -267,11 +283,11 @@ class AsyncDynamiteSampler:
         read per block, so a mid-stream re-tare takes effect on the next
         block."""
         config = self._require_adc()
-        calibration = self.require_calibration()
+        calibration = self._require_calibration()
         calibration.check_units(units)
         assembler = BlockAssembler(config.sample_rate, blocksize)
         async for block in _blocks_from_packets(
-            self.stream_packets(inactivity_timeout), assembler
+            self.stream_packets(inactivity_timeout=inactivity_timeout), assembler
         ):
             # convert() copies (even for "raw"): a user mutating .data must
             # never corrupt .raw.
@@ -307,16 +323,67 @@ class AsyncDynamiteSampler:
         raise asyncio.TimeoutError
 
     async def read(
-        self, n: int, units: str = "raw", timeout: float = DEFAULT_READ_TIMEOUT_S
-    ) -> Block:
-        """Exactly ``n`` rows, or :class:`ReadTimeout`."""
+        self,
+        n: int | None = None,
+        *,
+        seconds: float | None = None,
+        units: Unit = "raw",
+        timeout: float = DEFAULT_READ_TIMEOUT_S,
+    ) -> Recording:
+        """Exactly ``n`` rows (or ``seconds`` of feed, rounded to rows),
+        or :class:`ReadTimeout`. Returns a :class:`Recording`: the rows
+        with the calibration, tare, and device snapshot frozen in, ready
+        for ``to_csv``/``to_dataframe``/``convert``.
+        """
+        if (n is None) == (seconds is None):
+            raise ValueError("exactly one of n or seconds")
+        config = self._require_adc()
+        calibration = self._require_calibration()
+        if seconds is not None:
+            n = max(1, round(seconds * config.sample_rate))
         if n < 1:
             raise ValueError("n must be >= 1")
+        tare = None if self.tare_raw is None else np.array(self.tare_raw)
         agen = self._stream_blocks(n, units, inactivity_timeout=timeout)
         try:
-            return await agen.__anext__()
+            block = await agen.__anext__()
+            return Recording.from_block(
+                block,
+                sample_rate=config.sample_rate,
+                calibration=calibration,
+                tare_raw=tare,
+                recorded_at=datetime.datetime.now().astimezone(),
+                device=device_metadata(
+                    self.info, config.gains, calibration, self.kvs.snapshot
+                ),
+                generator=_GENERATOR,
+            )
         finally:
             await agen.aclose()
+
+    def recording(
+        self,
+        units: Unit = "raw",
+        path=None,
+        blocksize: int = DEFAULT_BLOCKSIZE,
+    ) -> "AsyncCapture":
+        """An open-ended background capture, as an async context manager.
+
+        Blocks accumulate on a task of this device's loop (the caller's
+        code — driving a rig, sleeping, plotting — runs meanwhile), each
+        optionally written through a :class:`CsvRecorder` so a crash still
+        leaves a valid, flushed file. On exit (or ``stop()``), the partial
+        data is finalized into :attr:`AsyncCapture.recording`, including on
+        an exception in the body: a Ctrl+C ends the capture, it does not
+        lose it. An acquisition failure mid-capture
+        (:class:`ConnectionLost`, :class:`BufferOverrun`) finalizes what
+        arrived and re-raises on exit. The feed is held for the capture's
+        duration: ``read``/``tare``/another stream raise ``StreamActive``,
+        KVS raises ``KvsBusy``.
+        """
+        self._require_adc()
+        self._require_calibration().check_units(units)
+        return AsyncCapture(self, units, path, blocksize)
 
     async def tare(self, n=None):
         """Average ``n`` raw samples per channel into ``tare_raw`` (default
@@ -331,6 +398,126 @@ class AsyncDynamiteSampler:
             raise TareError(f"tare failed: no valid samples on channel(s) {empty}")
         self.tare_raw = np.nanmean(block.raw, axis=0)
         return self.tare_raw
+
+
+class AsyncCapture:
+    """The async context manager returned by
+    :meth:`AsyncDynamiteSampler.recording`.
+
+    Yielded on entry; while the capture runs, :attr:`rows` counts samples
+    arrived. After exit (or :meth:`stop`), :attr:`recording` holds the
+    finalized :class:`Recording` (``None`` only if nothing arrived: no
+    block, no ``ssn_origin``).
+    """
+
+    def __init__(self, dev, units, path, blocksize):
+        self._dev = dev
+        self._units = units
+        self._path = path
+        self._blocksize = blocksize
+        self._blocks = []
+        self._rows = 0
+        self._recorder = None
+        self._task = None
+        self._frozen = None
+        self._finalized = False
+        self.recording: Recording | None = None
+
+    @property
+    def rows(self) -> int:
+        """Samples captured so far."""
+        return self._rows
+
+    async def __aenter__(self) -> "AsyncCapture":
+        dev = self._dev
+        config = dev._require_adc()
+        calibration = dev._require_calibration()
+        if self._path is not None:
+            # Constructor re-checks units against its own fresh parse.
+            self._recorder = CsvRecorder(dev, self._path, units=self._units)
+        self._frozen = (
+            calibration,
+            None if dev.tare_raw is None else np.array(dev.tare_raw),
+            datetime.datetime.now().astimezone(),
+            device_metadata(dev.info, config.gains, calibration, dev.kvs.snapshot),
+            config.sample_rate,
+        )
+        self._task = asyncio.ensure_future(self._pump())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._finish(exc)
+        return False
+
+    async def stop(self) -> None:
+        """End the capture early (finalizes like a normal exit; idempotent)."""
+        if not self._finalized:
+            await self._finish(None)
+
+    async def _pump(self):
+        calibration, tare, _, _, sample_rate = self._frozen
+        assembler = BlockAssembler(sample_rate, self._blocksize)
+        async for block in _blocks_from_packets(self._dev.stream_packets(), assembler):
+            block = dataclasses.replace(
+                block,
+                data=calibration.convert(block.raw, self._units, tare),
+                units=self._units,
+            )
+            self._blocks.append(block)
+            self._rows += len(block)
+            if self._recorder is not None:
+                self._recorder.write(block)
+
+    async def _finish(self, body_exc):
+        if self._finalized:
+            return
+        self._finalized = True
+        task, self._task = self._task, None
+        task_error = None
+        if task is not None:
+            try:
+                if not task.done():
+                    # Give the pump a few loop beats to settle a pending
+                    # failure (link loss, recorder error) before cancelling,
+                    # so an acquisition death surfaces instead of a cancel.
+                    for _ in range(3):
+                        await asyncio.sleep(0)
+                        if task.done():
+                            break
+                if not task.done():
+                    task.cancel()
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:  # the feed died mid-capture
+                task_error = err
+        if self._recorder is not None:
+            recorder, self._recorder = self._recorder, None
+            recorder.close()
+        if self._blocks:
+            self.recording = self._join()
+        # A body exception (Ctrl+C included) wins; an acquisition failure is
+        # raised here only when the body itself was clean.
+        if body_exc is None and task_error is not None:
+            raise task_error
+
+    def _join(self) -> Recording:
+        calibration, tare, recorded_at, device_meta, sample_rate = self._frozen
+        return Recording(
+            data=np.concatenate([block.data for block in self._blocks]),
+            raw=np.concatenate([block.raw for block in self._blocks]),
+            t=np.concatenate([block.t for block in self._blocks]),
+            ssn0=self._blocks[0].ssn0,
+            units=self._units,
+            host_time=self._blocks[0].host_time,
+            rows_dropped=sum(block.rows_dropped for block in self._blocks),
+            sample_rate=sample_rate,
+            calibration=calibration,
+            tare_raw=tare,
+            recorded_at=recorded_at,
+            device=device_meta,
+            generator=_GENERATOR,
+        )
 
 
 def _block_on(coro, loop):
@@ -481,13 +668,39 @@ class DynamiteSampler:
     def tare_raw(self, value):
         self._async.tare_raw = value
 
+    def assembler(self, blocksize: int = DEFAULT_BLOCKSIZE) -> BlockAssembler:
+        """A :class:`BlockAssembler` for this device's sample rate."""
+        return self._async.assembler(blocksize)
+
     def read(
-        self, n: int, units: str = "raw", timeout: float = DEFAULT_READ_TIMEOUT_S
-    ) -> Block:
-        return self._run(self._async.read(n, units, timeout))
+        self,
+        n: int | None = None,
+        *,
+        seconds: float | None = None,
+        units: Unit = "raw",
+        timeout: float = DEFAULT_READ_TIMEOUT_S,
+    ) -> Recording:
+        """Exactly ``n`` rows (or ``seconds`` of feed), or :class:`ReadTimeout`;
+        the result is a :class:`Recording`."""
+        return self._run(
+            self._async.read(n, seconds=seconds, units=units, timeout=timeout)
+        )
 
     def tare(self, n=None):
         return self._run(self._async.tare(n))
+
+    def recording(
+        self,
+        units: Unit = "raw",
+        path=None,
+        blocksize: int = DEFAULT_BLOCKSIZE,
+    ) -> "Capture":
+        """An open-ended background capture, as a context manager; see
+        :meth:`AsyncDynamiteSampler.recording`. The pump runs on this
+        facade's private loop, so the ``with`` body owns the main thread:
+        drive the rig, wait, plot — a Ctrl+C ends the capture with the
+        partial data intact on :attr:`Capture.recording`."""
+        return Capture(self, self._async.recording(units, path, blocksize))
 
     def _iter_async(self, agen):
         try:
@@ -500,8 +713,47 @@ class DynamiteSampler:
             if self._loop is not None:
                 self._run(agen.aclose())
 
-    def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
+    def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: Unit = "raw"):
         return self._iter_async(self._async.stream(blocksize, units))
 
-    def stream_packets(self):
-        return self._iter_async(self._async.stream_packets())
+    def stream_packets(
+        self, units: Unit = "raw", inactivity_timeout: float | None = None
+    ):
+        return self._iter_async(
+            self._async.stream_packets(
+                units=units, inactivity_timeout=inactivity_timeout
+            )
+        )
+
+
+class Capture:
+    """The context manager returned by :meth:`DynamiteSampler.recording`.
+
+    Wraps the async capture on this facade's loop. ``rows`` counts samples
+    live; ``recording`` is the finalized :class:`Recording` after exit or
+    :meth:`stop` (``None`` when nothing arrived).
+    """
+
+    def __init__(self, dev, async_capture):
+        self._dev = dev
+        self._capture = async_capture
+
+    @property
+    def rows(self) -> int:
+        return self._capture.rows
+
+    @property
+    def recording(self) -> Recording | None:
+        return self._capture.recording
+
+    def stop(self) -> None:
+        """End the capture early (idempotent)."""
+        self._dev._run(self._capture.stop())
+
+    def __enter__(self) -> "Capture":
+        self._dev._run(self._capture.__aenter__())
+        return self
+
+    def __exit__(self, *exc):
+        self._dev._run(self._capture.__aexit__(*exc))
+        return False
