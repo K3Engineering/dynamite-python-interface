@@ -10,6 +10,7 @@ import pytest
 from dynamite_sampler.kvs import (
     FOLDER_SETTINGS,
     KEY_DEVICE_NAME,
+    Kvs,
     KvsClient,
     KvsRejected,
 )
@@ -37,6 +38,14 @@ class FakeClient(KvsClient):
 
 async def test_unset_returns_none():
     assert await FakeClient().get_device_name() is None
+
+
+async def test_kvs_exposes_get_device_name():
+    kvs = Kvs(client=None, advertised_name="fake")
+    kvs._client = FakeClient()
+    assert await kvs.get_device_name() is None
+    kvs._client.store[(FOLDER_SETTINGS, KEY_DEVICE_NAME)] = "Rack 4 (West)"
+    assert await kvs.get_device_name() == "Rack 4 (West)"
 
 
 async def test_set_returns_value():

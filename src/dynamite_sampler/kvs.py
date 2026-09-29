@@ -326,6 +326,11 @@ class Kvs:
         """Settle an in-flight command with ``exc`` (called on link loss)."""
         self._client.fail_pending(exc)
 
+    async def get_device_name(self) -> str | None:
+        """The user-assigned device name (Settings namespace), or None when
+        unset — the device then goes by its advertised name."""
+        return await self._client.get_device_name()
+
     def set_on_change(self, callback):
         self._on_change = callback
 

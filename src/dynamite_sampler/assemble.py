@@ -1,9 +1,12 @@
-"""Assemble :class:`Block`s from :class:`Packet`s.
+"""Assemble raw :class:`Block`s from :class:`Packet`s.
 
 The device feed is a stream of :class:`Packet`s; a :class:`Block` is a
-fixed-size window over the sample timeline. The assembler is public so a
-script that needs both layers can drive its own fan-out loop: packets to
-per-packet consumers, ``push`` results to block consumers.
+fixed-size window over the sample timeline. Windowing is separate from
+unit conversion: the assembler folds raw packets into raw blocks, and
+``AsyncDynamiteSampler.stream`` converts each block as it is yielded. The
+assembler is public so a script that needs both layers can drive its own
+fan-out loop: packets to per-packet consumers, ``push`` results to block
+consumers.
 """
 
 import numpy as np
@@ -13,34 +16,25 @@ from .packet import Packet
 
 
 class BlockAssembler:
-    """Push packets, get fixed-size blocks.
+    """Push packets, get fixed-size raw blocks.
 
     A block's rows come from one or more packets, and a packet straddling a
     block boundary is split. Missed samples (``Packet.rows_dropped``) become
     NaN rows counted in ``Block.rows_dropped``, so a block always spans
     exactly ``blocksize / sample_rate`` seconds of the sample timeline.
 
+    Blocks are raw counts (``units == "raw"``, ``data`` is the ``raw``
+    array): no calibration is involved, so the fold works on any board.
     ``push`` returns the blocks completed by that packet (usually ``[]`` or
     a single-element list; more when ``blocksize`` is smaller than a
     packet).
     """
 
-    def __init__(
-        self,
-        calibration,
-        sample_rate: int,
-        blocksize: int,
-        units: str = "raw",
-        tare_raw=None,
-    ):
-        calibration.check_units(units)
+    def __init__(self, sample_rate: int, blocksize: int):
         if blocksize < 1:
             raise ValueError("blocksize must be >= 1")
-        self._calibration = calibration
         self._rate = sample_rate
         self._blocksize = blocksize
-        self._units = units
-        self._tare = tare_raw
         self._origin = None
         self._start_index = 0
         self._chunks = []  # (rows, is_gap, arrival_time)
@@ -81,15 +75,14 @@ class BlockAssembler:
         return blocks
 
     def _make_block(self, block_raw, host_time, dropped) -> Block:
-        data = self._calibration.convert(block_raw, self._units, self._tare)
         t = np.arange(self._start_index, self._start_index + block_raw.shape[0])
         t = t / self._rate
         block = Block(
-            data=data,
+            data=block_raw,
             raw=block_raw,
             t=t,
             ssn0=int(self._origin + self._start_index),
-            units=self._units,
+            units="raw",
             host_time=host_time,
             rows_dropped=dropped,
         )
@@ -97,13 +90,10 @@ class BlockAssembler:
         return block
 
 
-async def blocks_from_packets(packets, assembler: BlockAssembler):
-    """Async generator folding a packet stream into blocks.
-
-    ``packets`` is e.g. :meth:`AsyncDynamiteSampler.stream_packets`; compose
-    this instead of :meth:`AsyncDynamiteSampler.stream` when the packets are
-    also needed themselves.
-    """
+async def _blocks_from_packets(packets, assembler: BlockAssembler):
+    """Async generator folding a packet stream into blocks; the loop behind
+    :meth:`AsyncDynamiteSampler.stream`. Composing manually (the packet
+    loop plus ``assembler.push``) is how a script consumes both layers."""
     async for packet in packets:
         for block in assembler.push(packet):
             yield block

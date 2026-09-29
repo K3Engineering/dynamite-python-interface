@@ -109,6 +109,47 @@ async def test_stream_converts_units():
     assert block.units == "raw"
 
 
+class NominalKvs(FakeKvs):
+    snapshot = {"F": {"adc_fsr": "1.2", "afe_gain": "15.6", "exc": "4.5"}, "U": {}}
+
+
+def make_nominal_device(client):
+    adc = ADCConfigData(4, "HIGH_RESOLUTION", 1000, [1, 1, 1, 1])
+    return AsyncDynamiteSampler(client, None, adc, NominalKvs())
+
+
+async def test_stream_converts_nominal_units_per_block():
+    client = FakeClient()
+    device = make_nominal_device(client)
+    agen = device.stream(blocksize=2, units="mV/V")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    client.notify(None, packet(0, [[1000, 0, 0, 0], [2000, 0, 0, 0]]))
+    block = await pending
+    await agen.aclose()
+    counts_per_mvv = (1 << 23) * 15.6 * 1 / (1.2 * 1000.0) * 4.5
+    assert block.units == "mV/V"
+    assert np.allclose(block.data[:, 0], [1000 / counts_per_mvv, 2000 / counts_per_mvv])
+    assert np.array_equal(block.raw[:, 0], [1000, 2000])
+
+
+async def test_stream_rereads_tare_raw_each_block():
+    client = FakeClient()
+    device = make_device(client)
+    agen = device.stream(blocksize=2, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    client.notify(None, packet(0, [[10, 0, 0, 0], [10, 0, 0, 0]]))
+    block1 = await pending
+    device.tare_raw = np.array([5.0, 0.0, 0.0, 0.0])  # mid-stream re-tare
+    pending = asyncio.ensure_future(agen.__anext__())
+    client.notify(None, packet(2, [[10, 0, 0, 0], [10, 0, 0, 0]]))
+    block2 = await pending
+    await agen.aclose()
+    assert block1.data[0, 0] == 10.0  # no tare at this block's conversion
+    assert block2.data[0, 0] == 5.0  # the new tare applies from the next block
+
+
 class FakePowerClient(FakeClient):
     def __init__(self, power_dbm):
         super().__init__()

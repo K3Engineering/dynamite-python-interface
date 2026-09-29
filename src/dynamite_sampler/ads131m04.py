@@ -34,49 +34,6 @@ class ID(ADCRegisterBase):
     )
 
 
-class Status(ADCRegisterBase):
-    _pack_ = 1
-    _fields_ = tuple(
-        reversed(
-            (
-                ("LOCK", ctypes.c_uint8, 1),
-                ("F_RESYNC", ctypes.c_uint8, 1),
-                ("REG_MAP", ctypes.c_uint8, 1),
-                ("CRC_ERR", ctypes.c_uint8, 1),
-                ("CRC_TYPE", ctypes.c_uint8, 1),
-                ("RESET", ctypes.c_uint8, 1),
-                ("WLENGTH", ctypes.c_uint8, 2),
-                ("RESERVED", ctypes.c_uint8, 4),
-                ("DRDY3", ctypes.c_uint8, 1),
-                ("DRDY2", ctypes.c_uint8, 1),
-                ("DRDY1", ctypes.c_uint8, 1),
-                ("DRDY0", ctypes.c_uint8, 1),
-            )
-        )
-    )
-
-
-class Mode(ADCRegisterBase):
-    _pack_ = 1
-    _fields_ = tuple(
-        reversed(
-            (
-                ("RESERVED", ctypes.c_uint8, 2),
-                ("REGCRC_EN", ctypes.c_uint8, 1),
-                ("RX_CRC_EN", ctypes.c_uint8, 1),
-                ("CRC_TYPE", ctypes.c_uint8, 1),
-                ("RESET", ctypes.c_uint8, 1),
-                ("WLENGTH", ctypes.c_uint8, 2),
-                ("RESERVED", ctypes.c_uint8, 3),
-                ("TIMEOUT", ctypes.c_uint8, 1),
-                ("DRDY_SEL", ctypes.c_uint8, 2),
-                ("DRDY_HiZ", ctypes.c_uint8, 1),
-                ("DRDY_FMT", ctypes.c_uint8, 1),
-            )
-        )
-    )
-
-
 class Clock(ADCRegisterBase):
     _pack_ = 1
     _fields_ = tuple(

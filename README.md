@@ -13,9 +13,10 @@ A Bleak library for the Dynamite sampler, in two layers:
   arrival time, payload size, and dropped-row count. This is the layer
   underneath, for per-packet latency and link metrics.
 
-Blocks are assembled from packets: `blocks_from_packets()` / `BlockAssembler`
-are public, so a script that needs both layers can iterate
-`dev.stream_packets()` and feed a `BlockAssembler` itself (see `stream.py`).
+Blocks are assembled from packets: `BlockAssembler` is public (windowing
+only — it folds raw packets into raw blocks, no calibration involved), so a
+script that needs both layers can iterate `dev.stream_packets()` and feed a
+`BlockAssembler` itself (see `stream.py`).
 
 Sticking to the happy path, the synchronous facade is enough:
 
@@ -53,8 +54,7 @@ Waveforms can be used for real time plotting of the data.
 #### Changing units
 
 `--conversion` selects the unit conversion the socket sink tells the receiver
-to divide out (one of: `adc`, `volts_adc_ir`, `volts_opamp_ir`,
-`kg_with_opamp`).
+to divide out (one of: `adc`, `volts_adc_ir`, `volts_opamp_ir`).
 
 Example usage:
 

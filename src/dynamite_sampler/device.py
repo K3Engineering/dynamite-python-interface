@@ -9,7 +9,7 @@ import time
 import bleak
 import numpy as np
 
-from .assemble import BlockAssembler, blocks_from_packets
+from .assemble import BlockAssembler, _blocks_from_packets
 from .block import Block
 from .calibration import Calibration
 from .discovery import find_single
@@ -212,9 +212,9 @@ class AsyncDynamiteSampler:
         item per BLE notification.
 
         The packet layer beneath :meth:`stream`: consume it directly for
-        per-packet latency or link metrics, and fold it into blocks with
-        :func:`blocks_from_packets` when both are needed. Packets are raw
-        counts only; no calibration is required. ``inactivity_timeout``
+        per-packet latency or link metrics, folding it into blocks with
+        your own :class:`BlockAssembler` when both are needed. Packets are
+        raw counts only; no calibration is required. ``inactivity_timeout``
         raises :class:`ReadTimeout` after that many seconds without a
         packet.
         """
@@ -260,24 +260,34 @@ class AsyncDynamiteSampler:
                 await self._client.stop_notify(DynamiteSamplerService.ADCFeed.UUID)
             self._active = False
 
-    def _block_assembler(self, blocksize, units) -> BlockAssembler:
+    async def _stream_blocks(self, blocksize, units, inactivity_timeout=None):
+        """Blocks out of the packet feed, converted per block.
+
+        The calibration is frozen at the stream's start; ``tare_raw`` is
+        read per block, so a mid-stream re-tare takes effect on the next
+        block."""
         config = self._require_adc()
-        return BlockAssembler(
-            self.require_calibration(),
-            config.sample_rate,
-            blocksize,
-            units,
-            self.tare_raw,
-        )
+        calibration = self.require_calibration()
+        calibration.check_units(units)
+        assembler = BlockAssembler(config.sample_rate, blocksize)
+        async for block in _blocks_from_packets(
+            self.stream_packets(inactivity_timeout), assembler
+        ):
+            # convert() copies (even for "raw"): a user mutating .data must
+            # never corrupt .raw.
+            yield dataclasses.replace(
+                block,
+                data=calibration.convert(block.raw, units, self.tare_raw),
+                units=units,
+            )
 
     async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
         """Infinite async generator of :class:`Block`.
 
-        Sugar over :meth:`stream_packets` + :func:`blocks_from_packets`;
+        Sugar over :meth:`stream_packets` + :class:`BlockAssembler`;
         compose those directly to consume both layers.
         """
-        assembler = self._block_assembler(blocksize, units)
-        async for block in blocks_from_packets(self.stream_packets(), assembler):
+        async for block in self._stream_blocks(blocksize, units):
             yield block
 
     async def _wait_packet(self, queue, disc, timeout):
@@ -302,10 +312,7 @@ class AsyncDynamiteSampler:
         """Exactly ``n`` rows, or :class:`ReadTimeout`."""
         if n < 1:
             raise ValueError("n must be >= 1")
-        assembler = self._block_assembler(n, units)
-        agen = blocks_from_packets(
-            self.stream_packets(inactivity_timeout=timeout), assembler
-        )
+        agen = self._stream_blocks(n, units, inactivity_timeout=timeout)
         try:
             return await agen.__anext__()
         finally:
@@ -390,6 +397,9 @@ class _SyncKvs:
     @property
     def snapshot(self):
         return self._dev._async.kvs.snapshot
+
+    def get_device_name(self) -> str | None:
+        return self._dev._run(self._dev._async.kvs.get_device_name())
 
 
 class DynamiteSampler:

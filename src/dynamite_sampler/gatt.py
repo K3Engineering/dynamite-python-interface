@@ -7,7 +7,7 @@ bytes, signed little-endian).
 """
 
 import dataclasses
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar
 
 from . import ads131m04
 from .errors import ProtocolError
@@ -21,31 +21,6 @@ class ADCConfigData:
     gains: list[int]
 
 
-@dataclasses.dataclass
-class FeedHeader:
-    """Packet header prepended to each BLE ADC feed notification."""
-
-    sample_sequence_number: int  # uint16, little-endian
-
-
-@dataclasses.dataclass
-class FeedData:
-    """A single ADC sample."""
-
-    ch0: int
-    ch1: int
-    ch2: int
-    ch3: int
-
-
-@dataclasses.dataclass
-class FeedPacket:
-    """A full BLE ADC feed notification: header + list of samples."""
-
-    header: FeedHeader
-    samples: list[FeedData]
-
-
 class BLEService:
     UUID: str
 
@@ -54,33 +29,13 @@ class BLECharacteristic:
     UUID: str
 
 
-_UnpackResultT = TypeVar("_UnpackResultT")
-_PackType = TypeVar("_PackType")
-
-
-class BLECharacteristicRead(BLECharacteristic, Generic[_UnpackResultT]):
-    """Base class for BLE characteristics that can be read."""
-
-    @classmethod
-    def unpack(cls, b: bytearray | bytes) -> _UnpackResultT:
-        raise NotImplementedError("Subclasses must implement the unpack method.")
-
-
-class BLECharacteristicWrite(BLECharacteristic, Generic[_PackType]):
-    """Base class for BLE characteristics that can be written."""
-
-    @classmethod
-    def pack(cls, data: _PackType) -> bytes | bytearray:
-        raise NotImplementedError("Subclasses must implement the pack method.")
-
-
 class DynamiteSamplerService(BLEService):
     """Service that sends the ADC values (the force measurements).
     Its UUID is advertised and used to filter scanning."""
 
     UUID = "e331016b-6618-4f8f-8997-1a2c7c9e5fa3"
 
-    class ADCFeed(BLECharacteristicRead[FeedPacket]):
+    class ADCFeed(BLECharacteristic):
         """The ADC feed. Notifications only.
 
         Header: 2-byte sample counter. Payload: N x 12-byte samples
@@ -108,24 +63,7 @@ class DynamiteSamplerService(BLEService):
             ssn = int.from_bytes(b[0 : cls.HEADER_BYTES], "little")
             return ssn, payload
 
-        @classmethod
-        def unpack(cls, b: bytearray | bytes) -> FeedPacket:
-            """Per-sample dataclass parse (slow path; the device decodes arrays)."""
-            ssn, payload = cls.split(b)
-            samples = []
-            for start in range(0, len(payload), cls.SAMPLE_BYTES):
-                chunk = payload[start : start + cls.SAMPLE_BYTES]
-                samples.append(
-                    FeedData(
-                        *(
-                            int.from_bytes(chunk[i : i + 3], "little", signed=True)
-                            for i in (0, 3, 6, 9)
-                        )
-                    )
-                )
-            return FeedPacket(FeedHeader(ssn), samples)
-
-    class ADCConfig(BLECharacteristicRead[ADCConfigData]):
+    class ADCConfig(BLECharacteristic):
         """ADC configuration (read-only).
 
         Network format (little-endian, packed):
@@ -184,7 +122,7 @@ class OTA(BLEService):
 class TxPower(BLEService):
     UUID = "74788a4c-72aa-4180-a478-59e969b959c9"
 
-    class TxPowerSet(BLECharacteristicWrite[int]):
+    class TxPowerSet(BLECharacteristic):
         UUID = "7478c418-35d3-4c3d-99d9-2de090159664"
 
         @staticmethod
@@ -198,14 +136,14 @@ class DeviceInformation(BLEService):
 
     UUID = "180A"
 
-    class ManufacturerName(BLECharacteristicRead[str]):
+    class ManufacturerName(BLECharacteristic):
         UUID = "2A29"
 
         @staticmethod
         def unpack(b: bytearray | bytes) -> str:
             return str(b, "utf-8")
 
-    class ModelNumber(BLECharacteristicRead[str]):
+    class ModelNumber(BLECharacteristic):
         """Marketing name, from the flashed board identity."""
 
         UUID = "2A24"
@@ -214,7 +152,7 @@ class DeviceInformation(BLEService):
         def unpack(b: bytearray | bytes) -> str:
             return bytes(b).rstrip(b"\x00").decode("utf-8")
 
-    class SerialNumber(BLECharacteristicRead[str]):
+    class SerialNumber(BLECharacteristic):
         """Serial number string (the eFuse MAC hex)."""
 
         UUID = "2A25"
@@ -223,14 +161,14 @@ class DeviceInformation(BLEService):
         def unpack(b: bytearray | bytes) -> str:
             return bytes(b).rstrip(b"\x00").decode("utf-8")
 
-    class FirmwareRevision(BLECharacteristicRead[str]):
+    class FirmwareRevision(BLECharacteristic):
         UUID = "2A26"
 
         @staticmethod
         def unpack(b: bytearray | bytes) -> str:
             return str(b, "utf-8")
 
-    class HardwareRevision(BLECharacteristicRead[str]):
+    class HardwareRevision(BLECharacteristic):
         """Board model, e.g. 'v700P'."""
 
         UUID = "2A27"
@@ -239,7 +177,7 @@ class DeviceInformation(BLEService):
         def unpack(b: bytearray | bytes) -> str:
             return bytes(b).rstrip(b"\x00").decode("utf-8")
 
-    class TxPowerLevel(BLECharacteristicRead[int]):
+    class TxPowerLevel(BLECharacteristic):
         UUID = "2A07"
 
         @staticmethod
@@ -247,29 +185,3 @@ class DeviceInformation(BLEService):
             if len(b) != 1:
                 raise ProtocolError("TX power must be a single int8 byte")
             return int.from_bytes(b, signed=True)
-
-
-def adc_reading_to_voltage(
-    reading: int,
-    adc_ref: float = 1.2,
-    adc_gain: int = 4,
-    opamp_gain: int = 1,
-    adc_bits: int = 24,
-) -> float:
-    """Legacy nominal ADC-to-voltage helper (stream.py's socket demo).
-
-    Not the calibrated conversion; use ``Calibration.convert`` instead."""
-    fsr_adc_in = adc_ref / adc_gain
-    lsb_adc_in = fsr_adc_in / 2 ** (adc_bits - 1)
-    voltage_adc_in = reading * lsb_adc_in
-    return voltage_adc_in / opamp_gain
-
-
-def voltage_to_weight(
-    value: float,
-    loadcell_ratio: float = 2.0,
-    fullscale: float = 200,
-    voltage_in: float = 4,
-) -> float:
-    """Legacy nominal voltage-to-weight helper (stream.py's socket demo)."""
-    return value * fullscale / (loadcell_ratio / 1000 * voltage_in)

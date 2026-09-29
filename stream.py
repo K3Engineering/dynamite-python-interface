@@ -15,9 +15,15 @@ from typing import Protocol, TypeVar
 import numpy as np
 
 import dynamite_sampler as dms
-from dynamite_sampler import gatt as ds
 
 T = TypeVar("T")
+
+
+def adc_reading_to_voltage(reading, adc_ref=1.2, adc_gain=4, opamp_gain=1, adc_bits=24):
+    """Nominal ADC counts -> volts (demo scale factors only; the calibrated
+    conversion is ``Calibration.convert``)."""
+    lsb_adc_in = (adc_ref / adc_gain) / 2 ** (adc_bits - 1)
+    return reading * lsb_adc_in / opamp_gain
 
 
 class Sink(Protocol[T]):
@@ -107,7 +113,7 @@ class SocketSink:
     Intended for waveforms & the `read_from_tcp_4_ports.js` script: the
     receiver divides by the int32 scale factor sent once per port."""
 
-    CONVERSIONS = ("adc", "volts_adc_ir", "volts_opamp_ir", "kg_with_opamp")
+    CONVERSIONS = ("adc", "volts_adc_ir", "volts_opamp_ir")
     _ZERO = (0).to_bytes(4, "little", signed=True)
 
     def __init__(self, dev, ports=None, conversion: str = "volts_adc_ir"):
@@ -137,12 +143,9 @@ class SocketSink:
     def _conversion(conversion, adc_gain):
         return {
             "adc": lambda x: x,
-            "volts_adc_ir": lambda x: ds.adc_reading_to_voltage(x, adc_gain=adc_gain),
-            "volts_opamp_ir": lambda x: ds.adc_reading_to_voltage(
+            "volts_adc_ir": lambda x: adc_reading_to_voltage(x, adc_gain=adc_gain),
+            "volts_opamp_ir": lambda x: adc_reading_to_voltage(
                 x, adc_gain=adc_gain, opamp_gain=26
-            ),
-            "kg_with_opamp": lambda x: ds.voltage_to_weight(
-                ds.adc_reading_to_voltage(x, adc_gain=adc_gain, opamp_gain=26)
             ),
         }[conversion]
 
@@ -166,13 +169,7 @@ class SocketSink:
 async def consume(dev, data_sinks, packet_sinks, blocksize: int = 100) -> None:
     """The fan-out loop: packets to packet sinks, assembled blocks to data
     sinks."""
-    assembler = dms.BlockAssembler(
-        dev.require_calibration(),
-        dev.sample_rate,
-        blocksize,
-        units="raw",
-        tare_raw=dev.tare_raw,
-    )
+    assembler = dms.BlockAssembler(dev.sample_rate, blocksize)
     async for packet in dev.stream_packets():
         for sink in packet_sinks:
             sink.handle(packet)

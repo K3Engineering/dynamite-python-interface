@@ -4,8 +4,7 @@ import asyncio
 
 import numpy as np
 
-from dynamite_sampler.assemble import BlockAssembler, blocks_from_packets
-from dynamite_sampler.calibration import Calibration
+from dynamite_sampler.assemble import BlockAssembler, _blocks_from_packets
 from dynamite_sampler.device import AsyncDynamiteSampler
 from dynamite_sampler.gatt import ADCConfigData
 from dynamite_sampler.packet import Packet
@@ -63,8 +62,7 @@ def pkt(ssn, rows, dropped=0, t=1.0):
 
 
 def make_assembler(blocksize=3):
-    calibration = Calibration.from_kvs({"F": {}, "U": {}}, [1, 1, 1, 1])
-    return BlockAssembler(calibration, 1000, blocksize, units="raw")
+    return BlockAssembler(1000, blocksize)
 
 
 def test_push_returns_nothing_until_blocksize():
@@ -149,7 +147,7 @@ async def test_stream_sugar_matches_manual_packet_assembly():
     client = FakeClient()
     assembler = make_assembler()
     manual = await drain(
-        blocks_from_packets(make_device(client).stream_packets(), assembler),
+        _blocks_from_packets(make_device(client).stream_packets(), assembler),
         client,
         SCRIPT,
         2,

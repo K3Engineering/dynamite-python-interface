@@ -10,7 +10,7 @@ with dms.connect() as dev:
 import asyncio
 
 from . import discovery as _discovery
-from .assemble import BlockAssembler, blocks_from_packets
+from .assemble import BlockAssembler
 from .block import Block
 from .calibration import Calibration, LoadCell
 from .csv_io import CsvRecorder
@@ -51,6 +51,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "discover",
+    "adiscover",
     "connect",
     "FoundDevice",
     "DynamiteSampler",
@@ -59,7 +60,6 @@ __all__ = [
     "UNCONFIGURED",
     "Block",
     "BlockAssembler",
-    "blocks_from_packets",
     "Packet",
     "Calibration",
     "LoadCell",
@@ -92,6 +92,12 @@ __all__ = [
 def discover(timeout: float = 5.0) -> list[FoundDevice]:
     """All Dynamite Samplers in range, sorted by RSSI descending."""
     return asyncio.run(_discovery.discover(timeout))
+
+
+async def adiscover(timeout: float = 5.0) -> list[FoundDevice]:
+    """Async :func:`discover` — for callers already inside an event loop
+    (Jupyter notebooks included), where :func:`discover` cannot run."""
+    return await _discovery.discover(timeout)
 
 
 def connect(address: str | FoundDevice | None = None) -> DynamiteSampler:
