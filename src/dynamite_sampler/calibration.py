@@ -30,6 +30,7 @@ _CAL_METADATA_KEYS = (
     "cal.board",
     "cal.tool",
     "cal.origin",
+    "cal.r.prov",
     "cal.temp",
     "cal.adc",
 )
@@ -187,6 +188,7 @@ class CalGroup:
     board_id: str | None
     tool: str | None
     origin: str | None
+    r_provenance: str | None
     temps_c: tuple | None
     adc_gains: list | None
     resistors: list
@@ -247,6 +249,7 @@ def _parse_cal_group(factory, n_channels):
         board_id=factory.get("cal.board"),
         tool=factory.get("cal.tool"),
         origin=factory.get("cal.origin"),
+        r_provenance=factory.get("cal.r.prov"),
         temps_c=None if temps is None else (temps[0], temps[1]),
         adc_gains=_parse_number_list(factory.get("cal.adc"), n_channels, "cal.adc"),
         resistors=resistors,

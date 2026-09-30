@@ -58,6 +58,7 @@ def test_calibrated_state_and_metadata():
     assert cal.is_calibrated
     assert cal.group.date == "2026-06-14"
     assert cal.group.board_id == "CB42 v1.0.3"
+    assert cal.group.r_provenance == "nominal"
     assert all(ch.is_calibrated for ch in cal.board)
     assert cal.load_cells[0].capacity_kg == 100.0
     assert cal.load_cells[0].sensitivity_mv_v == 2.007
