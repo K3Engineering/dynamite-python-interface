@@ -33,12 +33,12 @@ only — it folds raw packets into raw blocks, no calibration involved), so a
 script that needs both layers can iterate `dev.stream_packets()` and feed a
 `dev.assembler()` itself (see `stream.py`).
 
-The synchronous facade is enough for most scripts. Two notes: the sync
-`stream()` blocks the calling thread (for background acquisition use
+The synchronous facade is enough for most scripts, with two notes: the
+sync `stream()` blocks the calling thread (for background acquisition use
 `dev.recording()`, for a GUI event loop use a thread + queue or the async
-class), and the sync `stream_packets()` pays a cross-thread hop per packet —
-latency-sensitive code should take `AsyncDynamiteSampler` (`dms.aconnect()`)
-directly.
+class), and packets are async-only — a per-notification cross-thread hop
+would defeat the packet layer, so `stream_packets()` lives on
+`AsyncDynamiteSampler` (`dms.aconnect()`).
 
 ## Script to stream data to various sources `stream.py`
 

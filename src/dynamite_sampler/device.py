@@ -723,14 +723,9 @@ class DynamiteSampler:
     def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: Unit = "raw"):
         return self._iter_async(self._async.stream(blocksize, units))
 
-    def stream_packets(
-        self, units: Unit = "raw", inactivity_timeout: float | None = None
-    ):
-        return self._iter_async(
-            self._async.stream_packets(
-                units=units, inactivity_timeout=inactivity_timeout
-            )
-        )
+    # No sync stream_packets: one cross-thread hop per BLE notification
+    # defeats the point of the packet layer (latency, link metrics). Use
+    # AsyncDynamiteSampler for packets.
 
 
 class Capture:
