@@ -9,7 +9,6 @@ bytes, signed little-endian).
 import dataclasses
 from typing import ClassVar
 
-from . import ads131m04
 from .errors import ProtocolError
 
 
@@ -73,6 +72,10 @@ class DynamiteSamplerService(BLEService):
             mode:    uint16  [5:7]
             clock:   uint16  [7:9]
             pga:     uint16  [9:11]
+
+        Only four ADS131M04 register fields are used (datasheet bit
+        ranges): id.CHANCNT [11:8]; clock.PWR [1:0] and clock.OSR [4:2];
+        pga.PGAGAIN of channel i at bits [4i+2:4i].
         """
 
         UUID = "adcc0f19-2575-4502-9a48-0e99974eb34f"
@@ -84,21 +87,16 @@ class DynamiteSamplerService(BLEService):
             version = b[0]
             if version != 1:
                 raise ProtocolError(f"Unsupported ADC config version: {version}")
-            reg_id = ads131m04.ID.from_buffer(bytearray(b[1:3]))
-            reg_clock = ads131m04.Clock.from_buffer(bytearray(b[7:9]))
-            reg_gain = ads131m04.Gain.from_buffer(bytearray(b[9:11]))
+            reg_id = int.from_bytes(b[1:3], "little")
+            reg_clock = int.from_bytes(b[7:9], "little")
+            reg_gain = int.from_bytes(b[9:11], "little")
 
             power_mode = {0: "VERY_LOW_POWER", 1: "LOW_POWER", 2: "HIGH_RESOLUTION"}[
-                reg_clock.PWR
+                reg_clock & 0b11
             ]
-            rate = 32000 // 2**reg_clock.OSR
-            gains = [
-                2**reg_gain.PGAGAIN0,
-                2**reg_gain.PGAGAIN1,
-                2**reg_gain.PGAGAIN2,
-                2**reg_gain.PGAGAIN3,
-            ]
-            return ADCConfigData(reg_id.CHANCNT, power_mode, rate, gains)
+            rate = 32000 // 2 ** ((reg_clock >> 2) & 0b111)
+            gains = [2 ** ((reg_gain >> (4 * i)) & 0b111) for i in range(4)]
+            return ADCConfigData((reg_id >> 8) & 0xF, power_mode, rate, gains)
 
 
 class OTA(BLEService):
