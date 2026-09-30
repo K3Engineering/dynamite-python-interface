@@ -1,7 +1,9 @@
 """Firmware-release metadata and the GitHub releases catalog.
 
-Port of the app's `firmware_release.dart` (pure: version and channel
-rules, the device-identity parse, release selection) and
+Script-side tooling for ota_update.py, not part of the installed package
+(the library flashes verified bytes; release selection is a maintainer's
+job). Port of the app's `firmware_release.dart` (pure: version and
+channel rules, the device-identity parse, release selection) and
 `firmware_catalog.dart` (fetching) in one module — the rules agree with
 the app, a second consumer rather than a second opinion. The pure names
 are hardware-free and unit-tested; `GithubReleaseCatalog` is the only
@@ -17,7 +19,7 @@ import re
 import urllib.error
 import urllib.request
 
-from .errors import FirmwareCatalogError
+from dynamite_sampler.errors import FirmwareCatalogError
 
 __all__ = [
     "FirmwareChannel",

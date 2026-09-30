@@ -4,9 +4,9 @@
 Flash a local firmware .bin (-f), or go through the GitHub release
 catalog: --check reports the installed firmware versus the channel
 target, --latest downloads, verifies, and flashes it. The BLE protocol
-lives in dynamite_sampler.ota; the release rules in
-dynamite_sampler.releases; this script is argparse, device lookup by
-advertised name, and the progress bar.
+lives in dynamite_sampler.ota; the release rules in releases.py beside
+this script; this script is argparse, device lookup by advertised name,
+and the progress bar.
 """
 
 import argparse
@@ -30,7 +30,7 @@ from dynamite_sampler.errors import (  # noqa: E402
 )
 from dynamite_sampler.gatt import DeviceInformation  # noqa: E402
 from dynamite_sampler.ota import Ota  # noqa: E402
-from dynamite_sampler.releases import (  # noqa: E402
+from releases import (  # noqa: E402
     FirmwareChannel,
     GithubReleaseCatalog,
     describe_matches_tag,

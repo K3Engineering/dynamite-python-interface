@@ -9,7 +9,7 @@ import pytest
 
 import dynamite_sampler as dms
 from dynamite_sampler.errors import FirmwareCatalogError
-from dynamite_sampler.releases import (
+from releases import (
     RELEASES_URL,
     FirmwareChannel,
     FirmwareVersion,
