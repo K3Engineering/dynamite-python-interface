@@ -363,7 +363,8 @@ def read_csv(path) -> Recording:
     ``raw`` comes from the raw columns, ``data`` from the converted columns
     verbatim (blank cells are NaN, covering both the dropped-sample row
     pattern and the unit-unavailable column pattern), ``t`` is derived from
-    ``ssn`` and ``sample_rate_hz``, and ``host_time`` is NaN (a file-sourced
+    ``ssn`` and ``sample_rate_hz``, ``rows_dropped`` counts the all-blank
+    dropped-sample rows, and ``host_time`` is NaN (a file-sourced
     block never arrived over a link). The calibration is rebuilt from the
     metadata line, so ``Recording.convert`` works without a device; a file
     without metadata inputs gets an unprovisioned calibration (only ``raw``
@@ -412,6 +413,7 @@ def read_csv(path) -> Recording:
         )
     if np.any(np.diff(ssn) != 1):
         raise CsvFormatError(f"{path}: non-contiguous ssn (rows lost in transit)")
+    rows_dropped = int(np.count_nonzero(np.all(np.isnan(raw), axis=1)))
 
     entries = metadata.get("channels") or []
     tares = [entries[i].get("tare_raw") if i < len(entries) else None for i in range(n)]
@@ -435,6 +437,7 @@ def read_csv(path) -> Recording:
         ssn0=ssn_origin,
         units=units,
         host_time=float("nan"),
+        rows_dropped=rows_dropped,
         sample_rate=sample_rate,
         calibration=Calibration.from_metadata(metadata, n_channels=n),
         tare_raw=tare_raw,

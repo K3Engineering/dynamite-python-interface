@@ -93,6 +93,12 @@ def test_to_csv_read_csv_round_trip(tmp_path):
     assert np.allclose(converted, loaded.data, equal_nan=True, atol=_CSV_TOL)
 
 
+def test_read_csv_counts_dropped_rows(tmp_path):
+    recording = _recording()  # _RAW's middle row is a dropped (all-NaN) row
+    recording.to_csv(tmp_path / "run.csv")
+    assert read_csv(tmp_path / "run.csv").rows_dropped == 1
+
+
 @pytest.mark.parametrize("units", ["raw", "mV/V", "mV", "kgf", "N", "kN", "lbf"])
 def test_to_csv_at_every_unit_regenerates(tmp_path, units):
     recording = _recording(units=units, tare_raw=None)
@@ -232,6 +238,8 @@ async def test_capture_finalizes_contiguous_recording(tmp_path):
     assert recording is not None  # one full block; the last row is partial
     assert len(recording) == 2
     assert np.array_equal(recording.raw, [[1, 2, 3, 4], [5, 6, 7, 8]])
+    assert math.isnan(recording.host_time)  # read back from its own file
+    assert cap._blocks == []  # file-first: nothing accumulated in memory
     assert not device._active
     from_file = read_csv(tmp_path / "cap.csv")
     assert np.array_equal(from_file.raw, recording.raw)

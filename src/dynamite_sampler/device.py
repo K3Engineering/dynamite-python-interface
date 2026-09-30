@@ -12,7 +12,7 @@ import numpy as np
 
 from .assemble import BlockAssembler, _blocks_from_packets
 from .calibration import Calibration, Unit
-from .csv_io import _GENERATOR, CsvRecorder, device_metadata
+from .csv_io import _GENERATOR, CsvRecorder, device_metadata, read_csv
 from .discovery import find_single
 from .errors import (
     BufferOverrun,
@@ -356,13 +356,16 @@ class AsyncDynamiteSampler:
     ) -> "AsyncCapture":
         """An open-ended background capture, as an async context manager.
 
-        Blocks accumulate on a task of this device's loop (the caller's
-        code — driving a rig, sleeping, plotting — runs meanwhile), each
-        optionally written through a :class:`CsvRecorder` so a crash still
-        leaves a valid, flushed file. On exit (or ``stop()``), the partial
-        data is finalized into :attr:`AsyncCapture.recording`, including on
-        an exception in the body: a Ctrl+C ends the capture, it does not
-        lose it. An acquisition failure mid-capture
+        Blocks are consumed on a task of this device's loop (the caller's
+        code — driving a rig, sleeping, plotting — runs meanwhile). With
+        ``path`` they stream through a :class:`CsvRecorder` to disk and
+        never accumulate in memory (hours-long runs; a crash still leaves
+        a valid, flushed file), and the :class:`Recording` is loaded back
+        from the file on exit. Without ``path`` they accumulate in memory
+        — the bounded-capture form. On exit (or ``stop()``), the partial
+        data is finalized into :attr:`AsyncCapture.recording`, including
+        on an exception in the body: a Ctrl+C ends the capture, it does
+        not lose it. An acquisition failure mid-capture
         (:class:`ConnectionLost`, :class:`BufferOverrun`) finalizes what
         arrived and re-raises on exit. The feed is held for the capture's
         duration: ``read``/``tare``/another stream raise ``StreamActive``,
@@ -394,7 +397,9 @@ class AsyncCapture:
     Yielded on entry; while the capture runs, :attr:`rows` counts samples
     arrived. After exit (or :meth:`stop`), :attr:`recording` holds the
     finalized :class:`Recording` (``None`` only if nothing arrived: no
-    block, no ``ssn_origin``).
+    block, no ``ssn_origin``). A path-backed recording is loaded back from
+    its own file — the same shape ``read_csv`` returns: ``host_time`` is
+    NaN and ``data`` is the file's fixed-point conversion.
     """
 
     def __init__(self, dev, units, path, blocksize):
@@ -407,6 +412,7 @@ class AsyncCapture:
         self._recorder = None
         self._task = None
         self._frozen = None
+        self._sample_rate = None
         self._finalized = False
         self.recording: Recording | None = None
 
@@ -418,17 +424,20 @@ class AsyncCapture:
     async def __aenter__(self) -> "AsyncCapture":
         dev = self._dev
         config = dev._require_adc()
-        calibration = dev.calibration
+        self._sample_rate = config.sample_rate
         if self._path is not None:
-            # Constructor re-checks units against its own fresh parse.
+            # File-first: the recorder writes every block through; the
+            # conversion inputs freeze inside it (constructor re-checks
+            # units against its own fresh parse).
             self._recorder = CsvRecorder(dev, self._path, units=self._units)
-        self._frozen = (
-            calibration,
-            None if dev.tare_raw is None else np.array(dev.tare_raw),
-            datetime.datetime.now().astimezone(),
-            device_metadata(dev.info, config.gains, calibration, dev.kvs.snapshot),
-            config.sample_rate,
-        )
+        else:
+            calibration = dev.calibration
+            self._frozen = (
+                calibration,
+                None if dev.tare_raw is None else np.array(dev.tare_raw),
+                datetime.datetime.now().astimezone(),
+                device_metadata(dev.info, config.gains, calibration, dev.kvs.snapshot),
+            )
         self._task = asyncio.ensure_future(self._pump())
         return self
 
@@ -442,18 +451,22 @@ class AsyncCapture:
             await self._finish(None)
 
     async def _pump(self):
-        calibration, tare, _, _, sample_rate = self._frozen
-        assembler = BlockAssembler(sample_rate, self._blocksize)
+        assembler = BlockAssembler(self._sample_rate, self._blocksize)
         async for block in _blocks_from_packets(self._dev.stream_packets(), assembler):
-            block = dataclasses.replace(
-                block,
-                data=calibration.convert(block.raw, self._units, tare),
-                units=self._units,
-            )
-            self._blocks.append(block)
-            self._rows += len(block)
             if self._recorder is not None:
+                # The recorder converts the raw block itself, through its
+                # own frozen calibration; nothing is kept in memory.
                 self._recorder.write(block)
+            else:
+                calibration, tare, _, _ = self._frozen
+                self._blocks.append(
+                    dataclasses.replace(
+                        block,
+                        data=calibration.convert(block.raw, self._units, tare),
+                        units=self._units,
+                    )
+                )
+            self._rows += len(block)
 
     async def _finish(self, body_exc):
         if self._finalized:
@@ -481,7 +494,11 @@ class AsyncCapture:
         if self._recorder is not None:
             recorder, self._recorder = self._recorder, None
             recorder.close()
-        if self._blocks:
+            # The file is the single buffered representation; load the
+            # Recording back from it. Nothing arrived -> no file -> None.
+            if self._rows:
+                self.recording = await asyncio.to_thread(read_csv, self._path)
+        elif self._blocks:
             self.recording = self._join()
         # A body exception (Ctrl+C included) wins; an acquisition failure is
         # raised here only when the body itself was clean.
@@ -489,7 +506,7 @@ class AsyncCapture:
             raise task_error
 
     def _join(self) -> Recording:
-        calibration, tare, recorded_at, device_meta, sample_rate = self._frozen
+        calibration, tare, recorded_at, device_meta = self._frozen
         return Recording(
             data=np.concatenate([block.data for block in self._blocks]),
             raw=np.concatenate([block.raw for block in self._blocks]),
@@ -498,7 +515,7 @@ class AsyncCapture:
             units=self._units,
             host_time=self._blocks[0].host_time,
             rows_dropped=sum(block.rows_dropped for block in self._blocks),
-            sample_rate=sample_rate,
+            sample_rate=self._sample_rate,
             calibration=calibration,
             tare_raw=tare,
             recorded_at=recorded_at,
