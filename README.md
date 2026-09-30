@@ -12,7 +12,10 @@ A Bleak library for the Dynamite sampler. Three entry points:
   `rec.convert("N")`, `rec.to_dataframe()`, `rec.to_csv("out.csv")`.
 - **Captures** (`dev.read(n=..., units=...)`, `dev.recording(...)`): a
   capture returns that same `Recording`; `dev.recording()` is the open-ended
-  form — a background capture that keeps the partial data when you Ctrl+C:
+  form — a background capture that keeps the partial data when you Ctrl+C.
+  With a `path` it streams every block to disk and never accumulates in
+  memory (hours-long runs), loading the `Recording` back from the file on
+  exit:
 
   ```python
   import dynamite_sampler as dms
