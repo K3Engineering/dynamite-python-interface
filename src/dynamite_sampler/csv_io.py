@@ -232,9 +232,9 @@ class CsvRecorder:
             )
         gains = list(dev.gains)
         snapshot = dev.kvs.snapshot
-        # A fresh parse, not dev.calibration: identical result, but the
-        # device's own instance may be None after a bad KVS write while the
-        # error lives on the device. Here it raises at construction.
+        # A fresh parse, not dev.calibration: after a calibration-breaking
+        # KVS write the device keeps its last valid Calibration, while a
+        # new recording must fail here, at construction.
         self._calibration = Calibration.from_kvs(snapshot, gains)
         self._calibration.check_units(units)
         self._decimals = self._calibration.csv_decimals(units)

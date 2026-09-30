@@ -14,6 +14,7 @@ from dynamite_sampler.device import (
     _decode_samples,
 )
 from dynamite_sampler.errors import (
+    CalibrationError,
     ConnectionLost,
     DynamiteError,
     MultipleDevicesFound,
@@ -148,6 +149,16 @@ async def test_stream_rereads_tare_raw_each_block():
     await agen.aclose()
     assert block1.data[0, 0] == 10.0  # no tare at this block's conversion
     assert block2.data[0, 0] == 5.0  # the new tare applies from the next block
+
+
+async def test_calibration_breaking_rebuild_raises_and_keeps_last_good():
+    """A KVS write that leaves the cal data wrong raises out of the rebuild
+    (and hence out of the write); the device keeps its last valid cal."""
+    device = make_nominal_device(FakeClient())
+    assert device.calibration.nominals is not None
+    with pytest.raises(CalibrationError, match="missing"):
+        device._rebuild_calibration({"F": {"adc_fsr": "1.2"}, "U": {}})
+    assert device.calibration.nominals is not None
 
 
 class FakePowerClient(FakeClient):

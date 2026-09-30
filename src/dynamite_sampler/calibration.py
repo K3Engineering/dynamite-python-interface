@@ -291,7 +291,13 @@ class Calibration:
         ``pga_gains`` may be None (UNCONFIGURED board with no ADC config);
         the nominal map then can't convert, failing at ``check_units``/
         ``convert`` instead of here. Raises :class:`CalibrationError` only
-        on data that is present and wrong."""
+        on data that is present and wrong.
+
+        The calibration group is read from the Factory namespace; a future
+        User-namespace override (user recalibration of a factory-calibrated
+        board) is a precedence rule inside this parse — the snapshot this
+        method already receives carries both namespaces, so nothing about
+        its callers changes."""
         factory = dict(snapshot.get("F", {}))
         user = dict(snapshot.get("U", {}))
         n_channels = len(pga_gains) if pga_gains else ADC_CHANNEL_COUNT

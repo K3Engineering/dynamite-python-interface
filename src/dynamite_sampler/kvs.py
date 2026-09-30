@@ -257,7 +257,8 @@ class KvsClient:
 
 class KvsNamespace:
     """One folder of a :class:`Kvs`. Writes are verified and update the
-    snapshot, then trigger the device's calibration rebuild."""
+    snapshot, then trigger the device's calibration rebuild. A rebuild
+    failure raises out of the write/delete that caused it."""
 
     def __init__(self, kvs: "Kvs", folder: str):
         self._kvs = kvs
@@ -280,6 +281,23 @@ class KvsNamespace:
         self._kvs._changed()
         return readback
 
+    async def set_many(self, entries: dict[str, str]) -> None:
+        """Write several keys as one batch: each is verified and updates the
+        snapshot, then the calibration rebuild runs once at the end. This is
+        how a multi-key group (the ``ch{i}.r``/``ch{i}.raw``/``cal.*`` set)
+        must be written — key-by-key ``set`` would rebuild against a torn
+        group and raise. A failed write aborts the batch with the keys
+        written so far left in place (and no rebuild run)."""
+        for key, value in entries.items():
+            readback = await self._kvs._client.set_verified(self._folder, key, value)
+            if readback != value:
+                raise KvsError(
+                    f"read-back mismatch for {self._folder}:{key}: "
+                    f"{readback!r} != {value!r}"
+                )
+            self._kvs._namespaces.setdefault(self._folder, {})[key] = readback
+        self._kvs._changed()
+
     async def delete(self, key: str) -> None:
         await self._kvs._client.delete(self._folder, key)
         self._kvs._namespaces.get(self._folder, {}).pop(key, None)
@@ -293,7 +311,10 @@ class Kvs:
     write (with the read-back values the device just confirmed) rather than
     re-reading three namespaces over BLE, so ``snapshot`` is a live,
     read-only view: an indexable ``{folder: {key: raw_string}}`` mapping.
-    The device's ``Calibration`` rebuilds from a copy on every change.
+    The device's ``Calibration`` rebuilds from the snapshot on every change;
+    if the new values don't parse, the rebuild's :class:`CalibrationError`
+    raises out of the change that caused it (the device keeps its last
+    valid calibration — see :class:`KvsNamespace` for batched writes).
     """
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):

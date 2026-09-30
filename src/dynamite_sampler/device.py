@@ -16,7 +16,6 @@ from .csv_io import _GENERATOR, CsvRecorder, device_metadata
 from .discovery import find_single
 from .errors import (
     BufferOverrun,
-    CalibrationError,
     ConnectionLost,
     DynamiteError,
     ProtocolError,
@@ -89,9 +88,8 @@ class AsyncDynamiteSampler:
         self._disconnected = (
             disconnected if disconnected is not None else asyncio.Event()
         )
-        self._calibration_error = None
         # The initial parse raises CalibrationError (present and wrong
-        # fails connect). A later rebuild failure is deferred to stream/read.
+        # fails connect); a later rebuild failure raises out of the write.
         self.calibration = Calibration.from_kvs(kvs.snapshot, self._pga_gains)
         kvs.set_on_change(self._rebuild_calibration)
 
@@ -162,20 +160,9 @@ class AsyncDynamiteSampler:
 
     def _rebuild_calibration(self, snapshot):
         """Rebuild after a KVS write. A write that leaves the cal data wrong
-        still succeeds; the failure surfaces on the next stream/read/tare."""
-        try:
-            self.calibration = Calibration.from_kvs(snapshot, self._pga_gains)
-            self._calibration_error = None
-        except CalibrationError as exc:
-            self.calibration = None
-            self._calibration_error = exc
-
-    def _require_calibration(self) -> Calibration:
-        """The current calibration, raising its deferred error if a KVS write
-        left it invalid."""
-        if self._calibration_error is not None:
-            raise self._calibration_error
-        return self.calibration
+        raises here — out of the write that caused it; ``calibration``
+        keeps its last valid value."""
+        self.calibration = Calibration.from_kvs(snapshot, self._pga_gains)
 
     def assembler(self, blocksize: int = DEFAULT_BLOCKSIZE) -> BlockAssembler:
         """A :class:`BlockAssembler` for this device's sample rate."""
@@ -231,7 +218,7 @@ class AsyncDynamiteSampler:
         after that many seconds without a packet.
         """
         config = self._require_adc()
-        calibration = self._require_calibration()
+        calibration = self.calibration
         calibration.check_units(units)
         if self._active:
             raise StreamActive("a stream or read is already active")
@@ -283,7 +270,7 @@ class AsyncDynamiteSampler:
         read per block, so a mid-stream re-tare takes effect on the next
         block."""
         config = self._require_adc()
-        calibration = self._require_calibration()
+        calibration = self.calibration
         calibration.check_units(units)
         assembler = BlockAssembler(config.sample_rate, blocksize)
         async for block in _blocks_from_packets(
@@ -338,7 +325,7 @@ class AsyncDynamiteSampler:
         if (n is None) == (seconds is None):
             raise ValueError("exactly one of n or seconds")
         config = self._require_adc()
-        calibration = self._require_calibration()
+        calibration = self.calibration
         if seconds is not None:
             n = max(1, round(seconds * config.sample_rate))
         if n < 1:
@@ -382,7 +369,7 @@ class AsyncDynamiteSampler:
         KVS raises ``KvsBusy``.
         """
         self._require_adc()
-        self._require_calibration().check_units(units)
+        self.calibration.check_units(units)
         return AsyncCapture(self, units, path, blocksize)
 
     async def tare(self, n=None):
@@ -431,7 +418,7 @@ class AsyncCapture:
     async def __aenter__(self) -> "AsyncCapture":
         dev = self._dev
         config = dev._require_adc()
-        calibration = dev._require_calibration()
+        calibration = dev.calibration
         if self._path is not None:
             # Constructor re-checks units against its own fresh parse.
             self._recorder = CsvRecorder(dev, self._path, units=self._units)
@@ -566,6 +553,9 @@ class _SyncNamespace:
 
     def set(self, key: str, value: str) -> str:
         return self._dev._run(self._ns.set(key, value))
+
+    def set_many(self, entries: dict[str, str]) -> None:
+        return self._dev._run(self._ns.set_many(entries))
 
     def delete(self, key: str) -> None:
         return self._dev._run(self._ns.delete(key))
