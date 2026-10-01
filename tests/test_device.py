@@ -11,6 +11,7 @@ import dynamite_sampler.discovery as discovery
 from dynamite_sampler.device import (
     AsyncDynamiteSampler,
     DynamiteSampler,
+    SsnUnwrapper,
     _decode_samples,
 )
 from dynamite_sampler.errors import (
@@ -22,7 +23,6 @@ from dynamite_sampler.errors import (
     StreamActive,
 )
 from dynamite_sampler.gatt import ADCConfigData, TxPower
-from dynamite_sampler.ssn import SsnUnwrapper
 
 
 class FakeKvs:
