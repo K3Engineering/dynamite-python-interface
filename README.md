@@ -2,19 +2,60 @@
 
 Python interface for the Dynamite sampler board.
 
-## Bleak utility
+## Library `dynamite_sampler`
 
-A Bleak implementation that uses the `bleak` library to connect to the dynamite sampler,
-and streams that data to call back classes.
+A Bleak library for the Dynamite sampler. Three entry points:
+
+- **Files** (`dms.read_csv(path)`): a recorded `dynamite-csv` file (from the
+  app or this package) as a `Recording` — rows, units, and the calibration
+  rebuilt from the header, so it re-converts and re-tares without a device:
+  `rec.convert("N")`, `rec.to_dataframe()`, `rec.to_csv("out.csv")`.
+- **Captures** (`dev.read(n=..., units=...)`, `dev.recording(...)`): a
+  capture returns that same `Recording`; `dev.recording()` is the open-ended
+  form — a background capture that keeps the partial data when you Ctrl+C.
+  With a `path` it streams every block to disk and never accumulates in
+  memory (hours-long runs), loading the `Recording` back from the file on
+  exit:
+
+  ```python
+  import dynamite_sampler as dms
+
+  with dms.connect() as dev:
+      rec = dev.read(seconds=10, units="kgf")
+  rec.to_csv("run.csv")
+  ```
+- **Streams** (`dev.stream()`, `dev.stream_packets()`): live processing.
+  Blocks are fixed-size windows of samples on a continuous timeline —
+  dropped samples arrive as NaN rows counted in `block.rows_dropped`;
+  packets are one item per BLE notification, with arrival time, payload
+  size, and dropped-row count, for per-packet latency, closed-loop control,
+  and link metrics.
+
+Blocks are assembled from packets: `BlockAssembler` is public (windowing
+only — it folds raw packets into raw blocks, no calibration involved), so a
+script that needs both layers can iterate `dev.stream_packets()` and feed a
+`dev.assembler()` itself (see `stream.py`).
+
+The synchronous facade is enough for most scripts, with two notes: the
+sync `stream()` blocks the calling thread (for background acquisition use
+`dev.recording()`, for a GUI event loop use a thread + queue or the async
+class), and packets are async-only — a per-notification cross-thread hop
+would defeat the packet layer, so `stream_packets()` lives on
+`AsyncDynamiteSampler` (`dms.aconnect()`).
 
 ## Script to stream data to various sources `stream.py`
 
 This script implements various streaming sinks:
-- printing metrics to screen.
-- saving data to a `.csv` file.
-- sending it to a socket for to plotted by Waveforms.
+- `--metrics`: live link-health line (packets/sec, bytes/sec, rows/sec,
+  dropped rows).
+- `--tqdm`: a TQDM sample-count bar.
+- `--csv [path]`: record to a dynamite-csv file (default path when no value is
+  given; `--units` selects the converted column).
+- `--socket`: stream to localhost sockets for plotting with Waveforms.
+- `--txpwr N`: set the BLE TX power of the board before streaming.
+- `--blocksize N`: rows per assembled block (default 100).
 
-This script is still in flux and the arguments parsing might change.
+With no flags it runs metrics + socket + CSV recording.
 
 ### Waveforms plotting
 
@@ -29,17 +70,21 @@ Waveforms can be used for real time plotting of the data.
 
 #### Changing units
 
-Currently the script accepts a `JSON` dictionary to pass into the streaming class
-initializer. This allows the user to configure the streaming class to send a scaling
-factor so that the waveforms script can convert the data to other units.
-
-Options are:
-
-- "adc": raw ADC reading
-- "volts_adc_ir": Voltage on the ADC input referenced
-- "volts_opamp_ir": Voltage on the op-amp input referenced
-- "kg_with_opamp": Weight in Kg on the loadcell
+`--conversion` selects the unit conversion the socket sink tells the receiver
+to divide out (one of: `adc`, `volts_adc_ir`, `volts_opamp_ir`).
 
 Example usage:
 
-`python stream.py --metrics --csv --socket '{"conversion":"volts_adc_ir"}'`
+`python stream.py --metrics --csv --socket --conversion volts_adc_ir`
+
+## Script for OTA firmware updates `ota_update.py`
+
+Flashes a firmware image to a board over BLE.
+
+`python ota_update.py -f path/to/firmware.bin "device name"` — flash a local image
+
+`python ota_update.py --check "device name"` — report installed vs channel target
+
+`python ota_update.py --latest "device name"` — download, verify (size + SHA-256), and flash the channel target
+
+`--channel beta` opts `--check`/`--latest` into GitHub prereleases (default: stable).

@@ -1,292 +1,242 @@
 #!/usr/bin/env python
-"""Stream Dynamite sampler data to various locations"""
+"""Stream Dynamite sampler data to various locations.
+
+The flags select sinks; a sink is a callable taking one block (or packet),
+its resources held as context managers for the run of the stream. Metrics
+ride the per-packet layer beneath the blocks, fed from the same fan-out
+loop. Defaults to CSV + metrics + the TCP socket demo when nothing is
+selected.
+"""
 
 import argparse
 import asyncio
+import contextlib
 import datetime
-import collections
-import time
-import csv
-import inspect
 import socket
-import json
-import pathlib
-import itertools
+from typing import Callable
 
-from typing import Optional
+import numpy as np
 
-import dynamite_sampler_api as ds
-import dynamite_sampler_bleak_util as dsbu
-
-# TODO add pretty class prints
+import dynamite_sampler as dms
 
 
-class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
-    """This class writes FeedData to a CSV file"""
-
-    def __init__(self, file_path_str: Optional[str] = None):
-        if not file_path_str:
-            # Use a default file path
-            date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path_str = f"./data/feeddata_{date_str}.csv"
-
-        # resolve the path so .parent works properly
-        self.file_path = pathlib.Path(file_path_str).resolve()
-
-        # Make sure that the directory for the file exists, if it doesn't make it
-        self.file_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # https://docs.python.org/3/library/csv.html#id4
-        # for csvwriter, the newline="" has to be used for proper line ending quotes
-        # Unclear if this is actually needed in this use case
-        self.csv_file = open(self.file_path, "w", newline="")
-
-    def setup(self, device_dict):
-        print("#", "CSV setup:", datetime.datetime.now(), file=self.csv_file)
-        print("#", device_dict, file=self.csv_file)
-
-        # fieldnames_feedheader = inspect.getfullargspec(ds.FeedHeader.__init__).args[1:]
-        fieldnames_feeddata = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
-        fieldnames = ["Sample Sequence Number"] + fieldnames_feeddata
-
-        self.writer = csv.DictWriter(self.csv_file, fieldnames)
-        self.writer.writeheader()
-
-    def callback(self, header: ds.FeedHeader, feeddatas: list[ds.FeedData], missing):
-        # print("callback in csv writer")
-        for i, data in enumerate(feeddatas):
-            ssn_dict = {"Sample Sequence Number": header.sample_sequence_number + i}
-            self.writer.writerow(collections.ChainMap(ssn_dict, data.__dict__))
-
-    def cleanup(self):
-        print("Closing csv file")
-        self.csv_file.close()
+def adc_reading_to_voltage(reading, adc_ref=1.2, adc_gain=4, opamp_gain=1, adc_bits=24):
+    """Nominal ADC counts -> volts (demo scale factors only; the calibrated
+    conversion is ``Calibration.convert``)."""
+    lsb_adc_in = (adc_ref / adc_gain) / 2 ** (adc_bits - 1)
+    return reading * lsb_adc_in / opamp_gain
 
 
-class TQDMPbar(dsbu.NotifyCallbackRawData):
-    """Use TQDM to show packet metrics"""
+def csv_recording_path(file_path_str: str) -> str:
+    """The given path, or a timestamped default under ./data."""
+    if file_path_str:
+        return file_path_str
+    date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"./data/feeddata_{date_str}.csv"
 
-    def __init__(self):
-        # Import tqdm inside the class so that if the class isn't used, the import is
-        # optional.
-        from tqdm import tqdm
 
-        self.tqdm = tqdm
+class LinkMetrics:
+    """Print link-health metrics on one \\r line, from the packet layer:
+    packets/sec, bytes/sec, rows/sec, and dropped rows."""
 
-    def setup(self, device_dict):
-        self.pbar_packets = self.tqdm(
-            desc="Total packets", unit="packets", position=0, smoothing=1
-        )
-        self.pbar_bytes = self.tqdm(
-            desc="Total bytes", unit="bytes", position=1, unit_scale=True, smoothing=1
+    def __init__(self, print_dt: float = 0.5):
+        self._print_dt = print_dt
+        self._start = None
+        self._last_print = 0.0
+        self._packets = 0
+        self._bytes = 0
+        self._rows = 0
+        self._dropped = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self._packets:
+            print()
+
+    def update(self, packet: dms.Packet) -> None:
+        if self._start is None:
+            self._start = packet.time
+            self._last_print = packet.time
+        self._packets += 1
+        self._bytes += packet.payload_bytes
+        self._rows += packet.rows
+        self._dropped += packet.rows_dropped
+        if packet.time - self._last_print < self._print_dt:
+            return
+        self._last_print = packet.time
+        elapsed = packet.time - self._start
+        if elapsed <= 0:
+            return
+        print(
+            f"[{datetime.timedelta(seconds=int(elapsed))}] "
+            f"{self._packets / elapsed:6.1f} packets/s, "
+            f"{self._bytes / elapsed:7.0f} B/s, "
+            f"{self._rows / elapsed:7.1f} rows/s, "
+            f"{self._dropped} dropped rows",
+            end="\r",
         )
 
-    def callback(self, rawdata: bytes):
-        self.pbar_packets.update(1)
-        self.pbar_bytes.update(len(rawdata))
 
-    def cleanup(self):
-        self.pbar_bytes.close()
-        self.pbar_packets.close()
+class WaveformsSocket:
+    """Stream each raw channel to a TCP localhost socket.
 
+    Intended for waveforms & the `read_from_tcp_4_ports.js` script: the
+    receiver divides by the int32 scale factor sent once per port. The
+    connection handshake (prompt, then four connects) runs on enter."""
 
-class MetricsPrinter(dsbu.NotifyCallbackRawData):
-    """Print metrics on the same line using \r"""
+    CONVERSIONS = ("adc", "volts_adc_ir", "volts_opamp_ir")
+    _ZERO = (0).to_bytes(4, "little", signed=True)
 
-    def __init__(self, n_sample_avg: int = 15, print_dt: float = 0.1):
-        """
-        n_sample_avg: how many sample raw sample metrics to average
-        print_dt:   [Seconds] The minimum time between printing the delta.
-                    This makes the metrics more readable since it doesn't flicker as often.
-        """
-        self.queue_len = int(n_sample_avg)
-        self.print_dt = float(print_dt)
+    def __init__(self, dev, ports=None, conversion: str = "volts_adc_ir"):
+        self._dev = dev
+        self.ports = ports or [8090, 8091, 8092, 8093]
+        self._conversion = conversion
+        if len(set(self.ports)) != 4:
+            raise ValueError("There need to be 4 distinct ports")
+        self._servers = []
 
-    def setup(self, device_dict):
-        self.prev_time = time.time()  # The previous time a callback was called
-        self.prev_time_print = 0.0  # Previous time when a metric was printed
-        self.total_packets: int = 0
-        self.total_bytes: int = 0
-        self.start_time = None  # When the first callback was called
-
-        # Save the past N metrics for averaging. There is always one packet per call,
-        # so no need to save that.
-        self.q_dt = collections.deque((), self.queue_len)
-        # self.q_packets = collections.deque((), queue_len)
-        self.q_bytes = collections.deque((), self.queue_len)
-
-    def callback(self, rawdata):
-        ## Time calculations
-        cur_time = time.time()
-        if not self.start_time:
-            self.start_time = cur_time
-
-        dt = cur_time - self.prev_time  # Delta between calls
-        self.prev_time = cur_time  # update for the next call
-
-        ## Update values
-        rawdata_len = len(rawdata)
-
-        self.total_packets += 1
-        self.total_bytes += rawdata_len
-
-        self.q_dt.append(dt)
-        # self.q_packets.append(1)  # its always one packet
-        self.q_bytes.append(rawdata_len)
-
-        ## Metric calculations, update less frequently to make it easier to read
-        if cur_time - self.prev_time_print > self.print_dt:
-            self.prev_time_print = cur_time
-            elapsed_time = datetime.timedelta(seconds=cur_time - self.start_time)
-
-            avg_dt = sum(self.q_dt) / len(self.q_dt)
-            avg_packets = 1
-            avg_bytes = sum(self.q_bytes) / len(self.q_bytes)
-
-            metric_str = (
-                f"[{elapsed_time}] "
-                f"Avg {len(self.q_dt)} samples, "
-                f"dt: {avg_dt * 1000:5.1f}ms, "
-                f"{self.total_packets:10} packets, "
-                f"{avg_packets / avg_dt:6.1f} packet/sec, "
-                f"{avg_bytes:3} bytes/packet, "
-                f"{avg_bytes / avg_dt:5.1f} bytes/sec "
-            )
-
-            print(metric_str, end="\r")
-
-    def cleanup(self):
-        print()
-        print("cleaned up printer")
-
-
-class SocketStream(dsbu.NotifyCallbackFeeddatas):
-    """Stream each channel to a TCP localhost socket.
-    Intended for to be used with waveforms & the `read_from_tcp_4_ports.js` script."""
-
-    def __init__(
-        self, ports: Optional[list[int]] = None, conversion: str = "volts_adc_ir"
-    ):
-        self.ports = ports
-        if not self.ports:
-            self.ports = [8090, 8091, 8092, 8093]
-        assert len(set(self.ports)) == 4, "There needs to be 4 ports specified"
-
-        self.conversion_str = conversion
-        self.servers: list[socket.socket] = []
-
-        # What data to send when samples where dropped
-        self.empty_data = ds.FeedData(0, 0, 0, 0)
-
-    def setup(self, device_dict):
+    def __enter__(self):
         input("Press enter to start socket connections")
         for port in self.ports:
             print(f"waiting socket {port}")
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("localhost", port))
-            self.servers.append(s)
+            self._servers.append(s)
             print(f"socket connected {port}")
 
-        # TODO make this a bit less hacky, more versatile
-        if device_dict["ADCConfig"]:
-            adc_gains = device_dict["ADCConfig"].gains
-        else:
-            adc_gains = [1, 1, 1, 1]
-        print("Sending gains:", adc_gains)
-
-        for server, gain in zip(self.servers, adc_gains):
-            conversion_funcs = {
-                "adc": lambda x: x,
-                "volts_adc_ir": lambda x: ds.adc_reading_to_voltage(x, adc_gain=gain),
-                "volts_opamp_ir": lambda x: ds.adc_reading_to_voltage(
-                    x, adc_gain=gain, opamp_gain=26
-                ),
-                "kg_with_opamp": lambda x: ds.voltage_to_weight(
-                    ds.adc_reading_to_voltage(x, adc_gain=gain, opamp_gain=26)
-                ),
-            }
-
-            self.converstion_func = conversion_funcs[self.conversion_str]
-
-            # Send the scaling factor by which to divide the values to get the selected units.
-            scale_factor = int(1 / self.converstion_func(1))
+        gains = self._dev.gains or [1, 1, 1, 1]
+        print("Sending gains:", gains)
+        for server, gain in zip(self._servers, gains):
+            scale_factor = int(1 / self._convert(self._conversion, gain)(1))
             print(
                 "Sending scale factor:", scale_factor, "to socket", server.getsockname()
             )
             server.send(scale_factor.to_bytes(4, "little", signed=True))
+        return self
 
-    def callback(self, header, feeddatas, missing):
-        # Send empty data for the other side to know that packets were missed
-
-        for data in itertools.chain((self.empty_data,) * missing, feeddatas):
-            for server, ch_val in zip(
-                self.servers, (data.ch0, data.ch1, data.ch2, data.ch3)
-            ):
-                bytes_to_send = ch_val.to_bytes(4, "little", signed=True)
-                server.send(bytes_to_send)
-
-    def cleanup(self):
+    def __exit__(self, *exc):
         print("Closing server sockets")
-        for server in self.servers:
+        for server in self._servers:
             server.close()
 
+    @staticmethod
+    def _convert(conversion, adc_gain):
+        return {
+            "adc": lambda x: x,
+            "volts_adc_ir": lambda x: adc_reading_to_voltage(x, adc_gain=adc_gain),
+            "volts_opamp_ir": lambda x: adc_reading_to_voltage(
+                x, adc_gain=adc_gain, opamp_gain=26
+            ),
+        }[conversion]
 
-def gen_append_class_init(cls):
-    class AppendClassInit(argparse.Action):
-        def __call__(self, parser, namespace, values, option_string=None):
-            if getattr(namespace, self.dest) is None:
-                setattr(namespace, self.dest, [])
+    def send(self, block: dms.Block) -> None:
+        for row in block.raw:
+            if np.isnan(row[0]):
+                # A NaN row is a dropped sample; zero is the receiver's
+                # gap marker.
+                for server in self._servers:
+                    server.send(self._ZERO)
+                continue
+            for server, value in zip(self._servers, row):
+                server.send(int(value).to_bytes(4, "little", signed=True))
 
-            getattr(namespace, self.dest).append(cls(**json.loads(values)))
 
-    return AppendClassInit
+async def consume(dev, on_packet, on_block, blocksize: int = 100) -> None:
+    """The fan-out loop: packets to the packet sinks, assembled blocks to
+    the block sinks."""
+    assembler = dev.assembler(blocksize)
+    async for packet in dev.stream_packets():
+        for fn in on_packet:
+            fn(packet)
+        for block in assembler.push(packet):
+            for fn in on_block:
+                fn(block)
+
+
+async def amain(args) -> None:
+    async with dms.aconnect(args.address) as dev:
+        if args.txpwr is not None:
+            await dev.set_tx_power(args.txpwr)
+
+        on_packet: list[Callable[[dms.Packet], None]] = []
+        on_block: list[Callable[[dms.Block], None]] = []
+        with contextlib.ExitStack() as stack:
+            if args.csv is not None:
+                recorder = stack.enter_context(
+                    dms.CsvRecorder(dev, csv_recording_path(args.csv), units=args.units)
+                )
+                on_block.append(recorder.write)
+            if args.tqdm:
+                from tqdm import tqdm
+
+                bar = stack.enter_context(tqdm(desc="Samples", unit="samples"))
+                on_block.append(lambda block: bar.update(len(block)))
+            if args.socket:
+                socket_sink = WaveformsSocket(dev, conversion=args.conversion)
+                on_block.append(stack.enter_context(socket_sink).send)
+            if args.metrics:
+                on_packet.append(stack.enter_context(LinkMetrics()).update)
+
+            await consume(dev, on_packet, on_block, blocksize=args.blocksize)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--address",
+        help="BLE address of the device (default: auto-detect, only one may be in range)",
+    )
+    parser.add_argument(
+        "--csv",
+        nargs="?",
+        const="",
+        default=None,
+        help="record the feed to a dynamite-csv file "
+        "(default path when no value is given)",
+    )
+    parser.add_argument(
+        "--units",
+        default="raw",
+        help="converted unit for the CSV recording (raw, mV/V, mV, kgf, N, kN, lbf)",
+    )
+    parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="show live link metrics (packets/sec, bytes/sec, dropped rows)",
+    )
+    parser.add_argument("--tqdm", action="store_true", help="show a TQDM sample bar")
+    parser.add_argument(
+        "--socket", action="store_true", help="stream to localhost sockets"
+    )
+    parser.add_argument(
+        "--conversion",
+        choices=WaveformsSocket.CONVERSIONS,
+        default="volts_adc_ir",
+        help="unit conversion the socket receiver should divide out "
+        "(default: %(default)s)",
+    )
+    parser.add_argument(
+        "--blocksize",
+        type=int,
+        default=100,
+        help="rows per assembled block (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--txpwr", type=int, default=None, help="set the BLE TX power of the board"
+    )
+    args = parser.parse_args()
+
+    if not (args.metrics or args.tqdm or args.socket or args.csv is not None):
+        args.metrics = args.socket = True
+        args.csv = ""
+
+    try:
+        asyncio.run(amain(args))
+    except KeyboardInterrupt:
+        print()
 
 
 if __name__ == "__main__":
-    # WIP argparser. Haven't figured out the best syntax for this script.
-    # This is something that works
-    parser = argparse.ArgumentParser(description=__doc__)
-    # TODO add help about the json input
-
-    arg_classes = [
-        ("--metrics", MetricsPrinter, "callbacks_rawdata"),
-        ("--tqdm", TQDMPbar, "callbacks_rawdata"),
-        ("--socket", SocketStream, "callbacks_feeddata"),
-        ("--csv", FeedDataCSVWriter, "callbacks_feeddata"),
-    ]
-
-    for flag, cls, dest in arg_classes:
-        # TODO add help to the arguments
-        # each argument will append a class instance to the dest.
-        # optionally each flag can take in a string json that will be parsed and passed
-        # into the initializer as keyword args.
-        parser.add_argument(
-            flag,
-            action=gen_append_class_init(cls),
-            dest=dest,
-            nargs="?",  # 0 or 1 arguments
-            const="{}",  # if 0 arguments pass in empty dict
-            default=[],  # if no arguments in dest, make it an empty list
-        )
-
-    parser.add_argument(
-        "--txpwr", default=None, type=int, help="Set the tx power of the board"
-    )
-
-    args = parser.parse_args()
-
-    if args.callbacks_rawdata == [] and args.callbacks_feeddata == []:
-        print("No callbacks selected; adding the following:")
-        callbacks_rawdata = [MetricsPrinter()]
-        callbacks_feeddata = [FeedDataCSVWriter(), SocketStream()]
-        print(callbacks_rawdata)
-        print(callbacks_feeddata)
-    else:
-        callbacks_rawdata = args.callbacks_rawdata
-        callbacks_feeddata = args.callbacks_feeddata
-
-    asyncio.run(
-        dsbu.dynamite_sampler_connect_notify(
-            callbacks_rawdata, callbacks_feeddata, tx_power=args.txpwr
-        )
-    )
+    main()
