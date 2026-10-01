@@ -42,7 +42,7 @@ class FakeClient:
         self.notify = callback
 
     async def stop_notify(self, uuid):
-        pass
+        self.notify = None
 
 
 def packet(ssn, rows):
@@ -204,6 +204,35 @@ async def test_read_returns_one_block_across_packets():
     assert block.raw.shape == (5, 4)
     assert block.ssn0 == 0
     assert np.allclose(block.t, [0.0, 0.001, 0.002, 0.003, 0.004])
+
+
+async def test_read_releases_the_feed_deterministically():
+    """A clean read close must not leave the feed active; teardown by
+    asyncgen finalization would let the next read race into StreamActive."""
+    client = FakeClient()
+    device = make_device(client)
+    pending = asyncio.ensure_future(device.read(2, units="raw"))
+    await wait_notify(client)
+    client.notify(None, packet(0, [[1, 2, 3, 4]] * 2))
+    await pending
+    assert not device._active
+    pending = asyncio.ensure_future(device.read(2, units="raw"))
+    await wait_notify(client)
+    client.notify(None, packet(2, [[5, 6, 7, 8]] * 2))
+    await pending
+    assert not device._active
+
+
+async def test_stream_close_releases_the_feed_deterministically():
+    client = FakeClient()
+    device = make_device(client)
+    agen = device.stream(blocksize=2, units="raw")
+    pending = asyncio.ensure_future(agen.__anext__())
+    await wait_notify(client)
+    client.notify(None, packet(0, [[1, 2, 3, 4]] * 2))
+    await pending
+    await agen.aclose()
+    assert not device._active
 
 
 async def test_read_times_out_without_rows():

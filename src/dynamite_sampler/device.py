@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import contextlib
 import dataclasses
 import datetime
 import threading
@@ -298,16 +299,20 @@ class AsyncDynamiteSampler:
         calibration = self.calibration
         calibration.check_units(units)
         assembler = BlockAssembler(config.sample_rate, blocksize)
-        async for block in _blocks_from_packets(
-            self.stream_packets(inactivity_timeout=inactivity_timeout), assembler
-        ):
-            # convert() copies (even for "raw"): a user mutating .data must
-            # never corrupt .raw.
-            yield dataclasses.replace(
-                block,
-                data=calibration.convert(block.raw, units, self.tare_raw),
-                units=units,
-            )
+        # aclosing: without an explicit aclose the packet generator's
+        # teardown (stop notify, _active = False) waits for asyncgen
+        # finalization, and the next read() races it into StreamActive.
+        async with contextlib.aclosing(
+            self.stream_packets(inactivity_timeout=inactivity_timeout)
+        ) as packets:
+            async for block in _blocks_from_packets(packets, assembler):
+                # convert() copies (even for "raw"): a user mutating .data
+                # must never corrupt .raw.
+                yield dataclasses.replace(
+                    block,
+                    data=calibration.convert(block.raw, units, self.tare_raw),
+                    units=units,
+                )
 
     async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
         """Infinite async generator of :class:`Block`.
@@ -315,8 +320,11 @@ class AsyncDynamiteSampler:
         Sugar over :meth:`stream_packets` + :class:`BlockAssembler`;
         compose those directly to consume both layers.
         """
-        async for block in self._stream_blocks(blocksize, units):
-            yield block
+        # Same aclosing need as _stream_blocks: closing this generator must
+        # release the feed deterministically, not at asyncgen finalization.
+        async with contextlib.aclosing(self._stream_blocks(blocksize, units)) as blocks:
+            async for block in blocks:
+                yield block
 
     async def _wait_packet(self, queue, disc, timeout):
         """The next queued packet, or raise ConnectionLost / asyncio.TimeoutError."""
