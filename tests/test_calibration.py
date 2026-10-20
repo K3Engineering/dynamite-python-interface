@@ -237,6 +237,15 @@ def test_stale_calibration_raises():
         Calibration.from_kvs({"F": bad, "U": {}}, PGA)
 
 
+def test_cal_group_without_cal_adc_raises():
+    # cal.adc is part of the group: a group without it is incomplete, not a
+    # group to be trusted without the staleness guard.
+    bad = dict(FACTORY)
+    del bad["cal.adc"]
+    with pytest.raises(CalibrationError, match="cal.adc"):
+        Calibration.from_kvs({"F": bad, "U": {}}, PGA)
+
+
 def test_torn_group_without_date_raises():
     bad = dict(FACTORY)
     del bad["cal.date"]

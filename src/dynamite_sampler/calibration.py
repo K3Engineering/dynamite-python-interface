@@ -191,7 +191,7 @@ class CalGroup:
     origin: str | None
     r_provenance: str | None
     temps_c: tuple | None
-    adc_gains: list | None
+    adc_gains: list
     resistors: list
     readings: list
 
@@ -246,6 +246,9 @@ def _parse_cal_group(kv, n_channels, namespace):
     if saw_absent or not saw_present:
         raise CalibrationError("calibration: only some channels calibrated")
     temps = _parse_number_list(kv.get("cal.temp"), 2, "cal.temp")
+    adc_gains = _parse_number_list(kv.get("cal.adc"), n_channels, "cal.adc")
+    if adc_gains is None:
+        raise CalibrationError("calibration: missing cal.adc (incomplete group)")
     return CalGroup(
         date=date,
         namespace=namespace,
@@ -254,7 +257,7 @@ def _parse_cal_group(kv, n_channels, namespace):
         origin=kv.get("cal.origin"),
         r_provenance=kv.get("cal.r.prov"),
         temps_c=None if temps is None else (temps[0], temps[1]),
-        adc_gains=_parse_number_list(kv.get("cal.adc"), n_channels, "cal.adc"),
+        adc_gains=adc_gains,
         resistors=resistors,
         readings=readings,
     )
@@ -347,11 +350,7 @@ class Calibration:
         if group is None:
             channels = [ChannelBoard(nominals, i) for i in range(n_channels)]
         else:
-            if (
-                pga_gains is not None
-                and group.adc_gains is not None
-                and group.adc_gains != list(pga_gains)
-            ):
+            if pga_gains is not None and group.adc_gains != list(pga_gains):
                 raise CalibrationError(
                     f"stale calibration: cal.adc {group.adc_gains} != "
                     f"runtime PGA {list(pga_gains)}"
