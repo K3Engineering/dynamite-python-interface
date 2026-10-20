@@ -185,6 +185,7 @@ class CalGroup:
     """The parsed calibration group: metadata plus per-channel ladder data."""
 
     date: str
+    namespace: str  # "F" (factory) or "U" (user recalibration)
     board_id: str | None
     tool: str | None
     origin: str | None
@@ -221,9 +222,10 @@ def _resolve_nominals(factory, pga_gains):
     )
 
 
-def _parse_cal_group(factory, n_channels):
-    """The calibration group, or None when the ``cal.date`` marker is absent."""
-    date = factory.get("cal.date")
+def _parse_cal_group(kv, n_channels, namespace):
+    """The calibration group in ``kv``, or None when the ``cal.date`` marker
+    is absent (either no group, or a torn one — the callers distinguish)."""
+    date = kv.get("cal.date")
     if date is None:
         return None
     resistors = [None] * n_channels
@@ -231,8 +233,8 @@ def _parse_cal_group(factory, n_channels):
     saw_absent = False
     saw_present = False
     for i in range(n_channels):
-        r_value = factory.get(f"ch{i}.r")
-        raw_value = factory.get(f"ch{i}.raw")
+        r_value = kv.get(f"ch{i}.r")
+        raw_value = kv.get(f"ch{i}.raw")
         if r_value is None and raw_value is None:
             saw_absent = True
             continue
@@ -243,18 +245,39 @@ def _parse_cal_group(factory, n_channels):
         saw_present = True
     if saw_absent or not saw_present:
         raise CalibrationError("calibration: only some channels calibrated")
-    temps = _parse_number_list(factory.get("cal.temp"), 2, "cal.temp")
+    temps = _parse_number_list(kv.get("cal.temp"), 2, "cal.temp")
     return CalGroup(
         date=date,
-        board_id=factory.get("cal.board"),
-        tool=factory.get("cal.tool"),
-        origin=factory.get("cal.origin"),
-        r_provenance=factory.get("cal.r.prov"),
+        namespace=namespace,
+        board_id=kv.get("cal.board"),
+        tool=kv.get("cal.tool"),
+        origin=kv.get("cal.origin"),
+        r_provenance=kv.get("cal.r.prov"),
         temps_c=None if temps is None else (temps[0], temps[1]),
-        adc_gains=_parse_number_list(factory.get("cal.adc"), n_channels, "cal.adc"),
+        adc_gains=_parse_number_list(kv.get("cal.adc"), n_channels, "cal.adc"),
         resistors=resistors,
         readings=readings,
     )
+
+
+def _effective_cal_group(user, factory, n_channels):
+    """The calibration group in effect: User when it holds one, else Factory.
+
+    Group keys present without the ``cal.date`` marker are a torn write and
+    raise — in either namespace. A torn Factory group is only inspected when
+    there is no User group, since the override decides what converts.
+    """
+    keys = _cal_group_key_names(n_channels)
+    for kv, namespace in ((user, "U"), (factory, "F")):
+        group = _parse_cal_group(kv, n_channels, namespace)
+        if group is not None:
+            return group
+        if any(k in kv for k in keys):
+            raise CalibrationError(
+                f"calibration: {namespace} keys without the cal.date marker "
+                "(torn write)"
+            )
+    return None
 
 
 def _parse_load_cells(user, n_channels):
@@ -296,52 +319,49 @@ class Calibration:
         ``convert`` instead of here. Raises :class:`CalibrationError` only
         on data that is present and wrong.
 
-        The calibration group is read from the Factory namespace; a future
-        User-namespace override (user recalibration of a factory-calibrated
-        board) is a precedence rule inside this parse — the snapshot this
-        method already receives carries both namespaces, so nothing about
-        its callers changes."""
+        The calibration group is read from the User namespace first and
+        falls back to Factory: a user recalibration overrides the factory
+        calibration, which stays as the as-built record. A group whose keys
+        are present without the ``cal.date`` marker is torn (an interrupted
+        overwrite) and raises, in either namespace."""
         factory = dict(snapshot.get("F", {}))
         user = dict(snapshot.get("U", {}))
         n_channels = len(pga_gains) if pga_gains else ADC_CHANNEL_COUNT
 
         constants_present = any(k in factory for k in BOARD_CONSTANT_KEYS)
-        cal_keys_present = any(k in factory for k in _cal_group_key_names(n_channels))
-
         if not constants_present:
-            if cal_keys_present:
+            if any(k in factory for k in _cal_group_key_names(n_channels)):
                 raise CalibrationError(
                     "calibration keys without the analog constants "
                     "(run provisioning first)"
                 )
-            channels = [None] * n_channels
-            group = None
-            nominals = None
+            return cls(
+                [None] * n_channels,
+                _parse_load_cells(user, n_channels),
+                None,
+                None,
+            )
+
+        nominals = _resolve_nominals(factory, pga_gains)
+        group = _effective_cal_group(user, factory, n_channels)
+        if group is None:
+            channels = [ChannelBoard(nominals, i) for i in range(n_channels)]
         else:
-            nominals = _resolve_nominals(factory, pga_gains)
-            group = _parse_cal_group(factory, n_channels)
-            if group is None:
-                if cal_keys_present:
-                    raise CalibrationError(
-                        "calibration keys without the cal.date marker (torn write)"
-                    )
-                channels = [ChannelBoard(nominals, i) for i in range(n_channels)]
-            else:
-                if (
-                    pga_gains is not None
-                    and group.adc_gains is not None
-                    and group.adc_gains != list(pga_gains)
-                ):
-                    raise CalibrationError(
-                        f"stale calibration: cal.adc {group.adc_gains} != "
-                        f"runtime PGA {list(pga_gains)}"
-                    )
-                channels = [
-                    ChannelBoard(nominals, i, group.resistors[i], group.readings[i])
-                    if group.readings[i] is not None
-                    else ChannelBoard(nominals, i)
-                    for i in range(n_channels)
-                ]
+            if (
+                pga_gains is not None
+                and group.adc_gains is not None
+                and group.adc_gains != list(pga_gains)
+            ):
+                raise CalibrationError(
+                    f"stale calibration: cal.adc {group.adc_gains} != "
+                    f"runtime PGA {list(pga_gains)}"
+                )
+            channels = [
+                ChannelBoard(nominals, i, group.resistors[i], group.readings[i])
+                if group.readings[i] is not None
+                else ChannelBoard(nominals, i)
+                for i in range(n_channels)
+            ]
 
         return cls(
             channels,

@@ -607,6 +607,9 @@ class _SyncNamespace:
     def set_many(self, entries: dict[str, str]) -> None:
         return self._dev._run(self._ns.set_many(entries))
 
+    def set_group(self, entries: dict[str, str], marker: str) -> None:
+        return self._dev._run(self._ns.set_group(entries, marker))
+
     def delete(self, key: str) -> None:
         return self._dev._run(self._ns.delete(key))
 

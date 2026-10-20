@@ -57,11 +57,93 @@ def test_calibrated_state_and_metadata():
     cal = calibrated()
     assert cal.is_calibrated
     assert cal.group.date == "2026-06-14"
+    assert cal.group.namespace == "F"
     assert cal.group.board_id == "CB42 v1.0.3"
     assert cal.group.r_provenance == "nominal"
     assert all(ch.is_calibrated for ch in cal.board)
     assert cal.load_cells[0].capacity_kg == 100.0
     assert cal.load_cells[0].sensitivity_mv_v == 2.007
+
+
+def _user_group(readings=READINGS, **metadata):
+    """A User-namespace recalibration group over the same ladder."""
+    group = {
+        "cal.date": "2026-09-01",
+        "cal.board": "CB42 v1.0.3",
+        "cal.origin": "user",
+        "cal.r.prov": "nominal",
+        "cal.temp": "-999,24.1",
+        "cal.tool": "board_calibration 2.0",
+        "cal.adc": "1,1,1,1",
+    }
+    group.update(metadata)
+    for i in range(4):
+        group[f"ch{i}.r"] = RESISTORS
+        group[f"ch{i}.raw"] = readings
+    return group
+
+
+def test_user_group_overrides_factory():
+    user = {**USER, **_user_group()}
+    cal = Calibration.from_kvs({"F": FACTORY, "U": user}, PGA)
+    assert cal.is_calibrated
+    assert cal.group.namespace == "U"
+    assert cal.group.date == "2026-09-01"
+    assert cal.group.origin == "user"
+
+
+def test_user_group_converts_with_its_own_readings():
+    shifted = "6383553.0,3192096.0,120.0,-3191776.0,-6383313.0"
+    user_readings = "1283553.0,692096.0,120.0,-691776.0,-1283313.0"
+    cal = Calibration.from_kvs(
+        {"F": FACTORY, "U": _user_group(readings=user_readings)}, PGA
+    )
+    sp = ladder_setpoints_mv_per_v(RESISTOR_VALUES)
+    out = cal.convert(np.array([1283553.0] * 4), "mV/V")
+    assert out[0] == pytest.approx(sp[0], rel=1e-9)
+    # The Factory map is no longer what converts.
+    assert 1283553.0 != float(shifted.split(",")[0])
+
+
+def test_user_group_without_factory_calibration():
+    factory = {k: v for k, v in FACTORY.items() if not k.startswith(("ch", "cal."))}
+    cal = Calibration.from_kvs({"F": factory, "U": _user_group()}, PGA)
+    assert cal.is_calibrated
+    assert cal.group.namespace == "U"
+
+
+def test_torn_user_group_raises():
+    bad = _user_group()
+    del bad["cal.date"]
+    with pytest.raises(CalibrationError, match="torn"):
+        Calibration.from_kvs({"F": FACTORY, "U": bad}, PGA)
+
+
+def test_torn_factory_group_ignored_when_user_group_valid():
+    factory = dict(FACTORY)
+    del factory["cal.date"]
+    cal = Calibration.from_kvs({"F": factory, "U": _user_group()}, PGA)
+    assert cal.group.namespace == "U"
+
+
+def test_torn_factory_group_raises_without_user_group():
+    factory = dict(FACTORY)
+    del factory["cal.date"]
+    with pytest.raises(CalibrationError, match="torn"):
+        Calibration.from_kvs({"F": factory, "U": {}}, PGA)
+
+
+def test_stale_user_calibration_raises():
+    user = _user_group(**{"cal.adc": "1,1,1,2"})
+    with pytest.raises(CalibrationError, match="stale"):
+        Calibration.from_kvs({"F": FACTORY, "U": user}, PGA)
+
+
+def test_factory_stale_gains_ignored_under_valid_user_group():
+    factory = dict(FACTORY)
+    factory["cal.adc"] = "2,2,2,2"
+    cal = Calibration.from_kvs({"F": factory, "U": _user_group()}, PGA)
+    assert cal.group.namespace == "U"
 
 
 def test_setpoints_from_resistors():

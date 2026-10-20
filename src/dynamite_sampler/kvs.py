@@ -270,7 +270,7 @@ class KvsNamespace:
     async def keys(self) -> list[str]:
         return await self._kvs._client.keys(self._folder)
 
-    async def set(self, key: str, value: str) -> str:
+    async def _set_verified(self, key: str, value: str) -> None:
         readback = await self._kvs._client.set_verified(self._folder, key, value)
         if readback != value:
             raise KvsError(
@@ -278,8 +278,11 @@ class KvsNamespace:
                 f"{readback!r} != {value!r}"
             )
         self._kvs._namespaces.setdefault(self._folder, {})[key] = readback
+
+    async def set(self, key: str, value: str) -> str:
+        await self._set_verified(key, value)
         self._kvs._changed()
-        return readback
+        return value
 
     async def set_many(self, entries: dict[str, str]) -> None:
         """Write several keys as one batch: each is verified and updates the
@@ -289,13 +292,27 @@ class KvsNamespace:
         group and raise. A failed write aborts the batch with the keys
         written so far left in place (and no rebuild run)."""
         for key, value in entries.items():
-            readback = await self._kvs._client.set_verified(self._folder, key, value)
-            if readback != value:
-                raise KvsError(
-                    f"read-back mismatch for {self._folder}:{key}: "
-                    f"{readback!r} != {value!r}"
-                )
-            self._kvs._namespaces.setdefault(self._folder, {})[key] = readback
+            await self._set_verified(key, value)
+        self._kvs._changed()
+
+    async def set_group(self, entries: dict[str, str], marker: str) -> None:
+        """Write a multi-key group replacing any existing one in this folder.
+
+        ``marker`` is the group's presence key (``cal.date``). It is deleted
+        first and written last, so an interrupted overwrite leaves data keys
+        without the marker — a torn group readers reject — instead of a mix
+        of old and new data that would parse as valid. One calibration
+        rebuild at the end, like :meth:`set_many`."""
+        if marker not in entries:
+            raise ValueError(f"group entries must include {marker!r}")
+        present = self._kvs._namespaces.get(self._folder, {})
+        if marker in present:
+            await self._kvs._client.delete(self._folder, marker)
+            present.pop(marker)
+        for key, value in entries.items():
+            if key != marker:
+                await self._set_verified(key, value)
+        await self._set_verified(marker, entries[marker])
         self._kvs._changed()
 
     async def delete(self, key: str) -> None:
