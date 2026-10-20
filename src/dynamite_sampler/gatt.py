@@ -41,7 +41,7 @@ class DynamiteSamplerService(BLEService):
         (4 channels x 3 bytes, signed little-endian).
         """
 
-        UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+        UUID = "6e08f21a-c056-43ed-890a-d72bb0f7c12f"
 
         HEADER_BYTES: ClassVar[int] = 2
         SAMPLE_BYTES: ClassVar[int] = 12
@@ -100,10 +100,10 @@ class DynamiteSamplerService(BLEService):
 
 
 class OTA(BLEService):
-    UUID = "d6f1d96d-594c-4c53-b1c6-144a1dfde6d8"
+    UUID = "6f2ecf77-fd83-42a8-86de-4be9713bd53c"
 
     class Control:
-        UUID = "7ad671aa-21c0-46a4-b722-270e3ae3d830"
+        UUID = "66815c6b-2b3f-4142-8a0a-bc34644eae01"
 
         NOP = bytearray.fromhex("00")
         REQUEST = bytearray.fromhex("01")
@@ -114,7 +114,7 @@ class OTA(BLEService):
         DONE_NAK = bytearray.fromhex("06")
 
     class Data:
-        UUID = "23408888-1f40-4cd8-9b89-ca8d45f8a5b0"
+        UUID = "09999d81-f1f6-4e31-8946-590220cc99af"
 
 
 class TxPower(BLEService):
