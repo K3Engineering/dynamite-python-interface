@@ -635,7 +635,12 @@ class DynamiteSampler:
     Runs a private event loop in a daemon thread; one implementation, one
     place where the math lives."""
 
-    def __init__(self, async_dev, loop, thread):
+    def __init__(
+        self,
+        async_dev: AsyncDynamiteSampler,
+        loop: asyncio.AbstractEventLoop,
+        thread: threading.Thread,
+    ):
         self._async = async_dev
         self._loop = loop
         self._thread = thread
