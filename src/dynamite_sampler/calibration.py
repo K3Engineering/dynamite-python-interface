@@ -33,6 +33,7 @@ _CAL_METADATA_KEYS = (
     "cal.r.prov",
     "cal.temp",
     "cal.adc",
+    "cal.txpwr",
 )
 
 # User-namespace load-cell slots; the first ADC_CHANNEL_COUNT are the channels.
@@ -56,6 +57,7 @@ def _cal_group_key_names(n_channels):
     for i in range(n_channels):
         keys.add(f"ch{i}.r")
         keys.add(f"ch{i}.raw")
+        keys.add(f"ch{i}.noise")
     return keys
 
 
