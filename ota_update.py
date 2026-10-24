@@ -9,8 +9,8 @@ from bleak import BleakClient, BleakScanner
 from tqdm import tqdm
 
 # TODO factor this out so its not duplicated in the firmware as well
-OTA_DATA_UUID = "23408888-1F40-4CD8-9B89-CA8D45F8A5B0"
-OTA_CONTROL_UUID = "7AD671AA-21C0-46A4-B722-270E3AE3D830"
+OTA_DATA_UUID = "09999d81-f1f6-4e31-8946-590220cc99af"
+OTA_CONTROL_UUID = "66815c6b-2b3f-4142-8a0a-bc34644eae01"
 
 SVR_CHR_OTA_CONTROL_REQUEST = bytearray.fromhex("01")
 SVR_CHR_OTA_CONTROL_REQUEST_ACK = bytearray.fromhex("02")
