@@ -1,7 +1,7 @@
 import asyncio
 from typing import Iterable, Optional
 
-import dynamite_sampler_api as ds
+from . import gatt as ds
 
 import bleak
 

@@ -3,7 +3,7 @@
 import asyncio
 import unittest
 
-from dynamite_sampler_kvs import (
+from dynamite_sampler.kvs import (
     FOLDER_SETTINGS,
     KEY_DEVICE_NAME,
     KvsClient,

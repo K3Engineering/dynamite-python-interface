@@ -9,7 +9,7 @@ from typing import Generic, TypeVar, ClassVar
 import dataclasses
 
 
-import ADS131M04Register
+from . import ADS131M04Register
 
 
 # Moved outside of the service characteristic classes to make it less nested.
