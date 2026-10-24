@@ -3,7 +3,7 @@
 import asyncio
 import unittest
 
-import dynamite_sampler_bleak_util as dsbu
+import dynamite_sampler.bleak_util as dsbu
 
 # Don't wait a second per poll cycle in tests.
 dsbu._DISCONNECT_POLL_S = 0.01

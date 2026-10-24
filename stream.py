@@ -15,8 +15,8 @@ import itertools
 
 from typing import Optional
 
-import dynamite_sampler_api as ds
-import dynamite_sampler_bleak_util as dsbu
+from dynamite_sampler import bleak_util as dsbu
+from dynamite_sampler import gatt as ds
 
 # TODO add pretty class prints
 
