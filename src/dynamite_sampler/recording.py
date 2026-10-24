@@ -1,10 +1,10 @@
-"""A complete capture: a :class:`Block` plus the provenance to stand alone.
+"""A complete capture: rows plus the provenance to stand alone.
 
 A ``Recording`` is what ``dev.read()`` returns, what ``dms.read_csv`` builds
 from a file, and what ``Recording.to_csv`` writes back out: the rows, their
 unit, and the frozen conversion inputs (calibration, tare, device metadata)
-that make the file self-describing. ``dev.stream()`` still yields plain
-``Block``s — a stream has no provenance worth freezing.
+that make the file self-describing. ``dev.stream()`` yields plain ``Packet``s
+— a stream has no provenance worth freezing.
 """
 
 import dataclasses
@@ -12,7 +12,6 @@ import datetime
 
 import numpy as np
 
-from .block import Block
 from .calibration import Calibration, Unit
 
 _KEEP_TARE = object()
@@ -21,11 +20,14 @@ COLUMN_NAME_STYLES = ("csv", "load_cell")
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Recording(Block):
+class Recording:
     """A contiguous run of samples with its conversion inputs frozen in.
 
-    Inherits every ``Block`` field (``data``/``raw``/``t``/``ssn0``/
-    ``units``/``host_time``/``rows_dropped``) and adds:
+    ``raw`` is absolute counts (``(n, N) float64``, exact for 24-bit) with
+    NaN rows where samples were lost, so row ``i`` is sample ``ssn0 + i`` and
+    ``t`` is arithmetic. ``data`` is the same rows converted to ``units``.
+    ``host_time`` is NaN for a file-sourced recording: it never arrived over
+    a link.
 
     - ``sample_rate``: samples per second (``t``'s denominator).
     - ``calibration``: the ``Calibration`` the rows convert through;
@@ -40,6 +42,12 @@ class Recording(Block):
     - ``generator``: the program that produced the source file.
     """
 
+    data: np.ndarray
+    raw: np.ndarray
+    t: np.ndarray
+    ssn0: int
+    units: str
+    host_time: float
     sample_rate: float
     calibration: Calibration
     tare_raw: np.ndarray | None = None
@@ -47,35 +55,19 @@ class Recording(Block):
     device: dict | None = None
     generator: str | None = None
 
-    @classmethod
-    def from_block(
-        cls,
-        block: Block,
-        *,
-        sample_rate: float,
-        calibration: Calibration,
-        tare_raw=None,
-        recorded_at=None,
-        device=None,
-        generator=None,
-    ) -> "Recording":
-        """A Recording over ``block``'s rows, with the capture's frozen
-        conversion inputs attached."""
-        return cls(
-            data=block.data,
-            raw=block.raw,
-            t=block.t,
-            ssn0=block.ssn0,
-            units=block.units,
-            host_time=block.host_time,
-            rows_dropped=block.rows_dropped,
-            sample_rate=sample_rate,
-            calibration=calibration,
-            tare_raw=tare_raw,
-            recorded_at=recorded_at,
-            device=device,
-            generator=generator,
-        )
+    @property
+    def rows_dropped(self) -> int:
+        """Rows lost in transit: the all-NaN rows kept in place to hold the
+        timeline."""
+        return int(np.count_nonzero(np.isnan(self.raw).all(axis=1)))
+
+    def __len__(self) -> int:
+        """Row count: how many samples of the timeline the recording spans."""
+        return self.raw.shape[0]
+
+    @property
+    def n_channels(self) -> int:
+        return self.raw.shape[1]
 
     def convert(self, units: Unit, tare_raw=_KEEP_TARE) -> "Recording":
         """The same rows in another unit; ``raw`` is untouched.

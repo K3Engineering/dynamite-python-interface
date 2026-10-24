@@ -1,13 +1,12 @@
 """dynamite-csv 1 files (docs/csv-format-v2.md): writing and reading.
 
-:class:`CsvRecorder` records a live feed incrementally: it freezes the
-recording-start snapshot (device identity, KVS, calibration, tare) and
-converts each incoming block's raw counts itself, so a mid-recording KVS
-write or re-tare can never leak into the file. :func:`write_recording`
-is the one-shot form behind ``Recording.to_csv``. :func:`read_csv` is the
-strict reader: it returns a :class:`Recording` (the same shape
-``dev.read`` returns) with its ``Calibration`` rebuilt from the file's
-metadata line, so loaded files re-convert without a device.
+:class:`CsvRecorder` records a live feed incrementally: it freezes its
+conversion inputs at construction and converts each incoming packet's raw
+counts itself, so a later KVS write or re-tare can never leak into the file.
+:func:`write_recording` is the one-shot form behind ``Recording.to_csv``.
+:func:`read_csv` is the strict reader: it returns a :class:`Recording` (the
+same shape ``dev.read`` returns) with its ``Calibration`` rebuilt from the
+file's metadata line, so loaded files re-convert without a device.
 """
 
 import csv
@@ -20,9 +19,9 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from .block import Block
 from .calibration import Calibration, LoadCell, Unit
 from .errors import CsvFormatError, ProvisioningError
+from .packet import Packet
 from .recording import Recording
 
 _log = logging.getLogger(__name__)
@@ -67,7 +66,7 @@ def _yaml_lines(metadata: dict) -> list[str]:
 
 
 def _sorted_namespace(snapshot, folder) -> dict:
-    entries = snapshot.get(folder, {})
+    entries = (snapshot or {}).get(folder, {})
     return {key: entries[key] for key in sorted(entries)}
 
 
@@ -81,10 +80,12 @@ def _load_cell_json(cell: LoadCell | None) -> dict | None:
     }
 
 
-def device_metadata(info, gains, calibration: Calibration, snapshot) -> dict:
+def device_metadata(info, gains, calibration: Calibration | None) -> dict:
     """The metadata ``device`` object: identity, analog front end, and the
-    raw KVS strings. ``info`` may be None (tests; connect() always has it)."""
-    nominals = calibration.nominals
+    raw KVS strings the calibration was parsed from. ``info`` may be None
+    (tests; connect() always has it)."""
+    nominals = None if calibration is None else calibration.nominals
+    snapshot = None if calibration is None else calibration.snapshot
     return {
         "name": None if info is None else info.name,
         "id": None if info is None else info.serial,
@@ -176,6 +177,19 @@ def _row_cells(ssn: int, raw_row, data_row, decimals) -> list[str]:
     return cells
 
 
+def _gap_cells(ssn: int, n_channels: int) -> list[str]:
+    return [str(ssn)] + [""] * (2 * n_channels)
+
+
+def _conversion_inputs(calibration, gains, units, tare_raw):
+    """The frozen conversion inputs for a recording: a calibration that can
+    produce ``units`` and the fixed-point decimals per channel."""
+    if calibration is None:
+        calibration = Calibration.from_kvs({}, gains)
+    calibration.check_units(units)
+    return calibration, calibration.csv_decimals(units)
+
+
 def write_recording(path, recording: Recording) -> None:
     """Write ``recording`` as a self-contained dynamite-csv 1 file (this
     is ``Recording.to_csv``; the import is lazy there to keep the two
@@ -209,42 +223,48 @@ def write_recording(path, recording: Recording) -> None:
 
 
 class CsvRecorder:
-    """Record a device's feed to a dynamite-csv 1 file.
+    """Record a device's packet feed to a dynamite-csv 1 file.
 
-    The recording-start snapshot (identity, KVS, calibration, tare) freezes
-    at construction; ``write`` converts each block's raw counts through the
-    frozen calibration and tare (the ``Block.units`` of incoming blocks is
-    ignored: only ``raw`` and ``ssn0`` are consumed). Blocks must arrive
-    contiguously from a single stream; a gap between blocks raises rather
-    than fabricating rows. The file is created when the first block
-    arrives (``ssn_origin``), so a recorder closed with no blocks leaves no
-    file.
+    Takes the device's static config (sample rate, gains, identity) at
+    construction and freezes the conversion inputs it is given, so a later
+    KVS write or re-tare can never leak into the file. :meth:`write` converts
+    each packet's raw counts through those frozen inputs; a packet carries
+    raw counts only.
 
-    A force ``units`` with a cell-less channel raises ``UnitUnavailable`` at
+    Packets must arrive contiguously from a single stream: a gap that
+    ``rows_dropped`` does not account for raises rather than fabricating
+    rows. The file is created when the first packet arrives (``ssn_origin``),
+    so a recorder closed with no packets leaves no file.
+
+    ``units="raw"`` with ``calibration=None`` records counts only. A force
+    unit with a cell-less channel raises ``UnitUnavailable`` here, at
     construction (no per-channel fallback; the converted column pattern is
     the app's export shape, not the API's).
     """
 
-    def __init__(self, dev, path, units: Unit = "raw"):
+    def __init__(
+        self,
+        dev,
+        path,
+        *,
+        units: Unit = "raw",
+        calibration: Calibration | None = None,
+        tare_raw=None,
+    ):
         if dev.sample_rate is None or dev.gains is None:
             raise ProvisioningError(
                 "device has no ADC config (UNCONFIGURED); nothing to record"
             )
         gains = list(dev.gains)
-        snapshot = dev.kvs.snapshot
-        # A fresh parse, not dev.calibration: after a calibration-breaking
-        # KVS write the device keeps its last valid Calibration, while a
-        # new recording must fail here, at construction.
-        self._calibration = Calibration.from_kvs(snapshot, gains)
-        self._calibration.check_units(units)
-        self._decimals = self._calibration.csv_decimals(units)
-        tare = dev.tare_raw
-        self._tare_raw = None if tare is None else list(tare)
+        self._calibration, self._decimals = _conversion_inputs(
+            calibration, gains, units, tare_raw
+        )
         self._units = units
+        self._tare_raw = None if tare_raw is None else np.array(tare_raw)
         self._n = len(gains)
         self._sample_rate = dev.sample_rate
         self._recorded_at = datetime.datetime.now().astimezone()
-        self._device = device_metadata(dev.info, gains, self._calibration, snapshot)
+        self._device = device_metadata(dev.info, gains, self._calibration)
         self._channels = channel_metadata(self._calibration, gains, self._tare_raw)
         self._path = Path(path)
         self._file = None
@@ -268,30 +288,45 @@ class CsvRecorder:
         self._csv_writer = csv.writer(self._file, lineterminator="\n")
         self._next_ssn = ssn_origin
 
-    def write(self, block: Block) -> None:
-        """Append one block (converted per the frozen snapshot)."""
-        raw = block.raw
+    def write(self, packet: Packet) -> None:
+        """Append one packet (converted per the frozen inputs).
+
+        ``packet.rows_dropped`` blank rows go in ahead of the packet's own
+        rows, so the file's ssn column stays contiguous from ``ssn_origin``.
+        The first packet's own ``rows_dropped`` is skipped: it counts samples
+        lost before the recording began, which the file cannot represent.
+        """
+        raw = packet.raw
         if raw.shape[1] != self._n:
             raise CsvFormatError(
-                f"block has {raw.shape[1]} channels; the recording is {self._n}"
+                f"packet has {raw.shape[1]} channels; the recording is {self._n}"
             )
         if self._file is None:
-            self._open(block.ssn0)
-        elif block.ssn0 != self._next_ssn:
-            raise CsvFormatError(
-                f"non-contiguous block: ssn0 {block.ssn0}, expected {self._next_ssn}"
+            self._open(packet.ssn)
+            gap = 0
+        else:
+            gap = packet.rows_dropped
+            if packet.ssn != self._next_ssn + gap:
+                raise CsvFormatError(
+                    f"non-contiguous packet: ssn {packet.ssn} after ssn "
+                    f"{self._next_ssn - 1} with {gap} dropped; "
+                    f"expected {self._next_ssn + gap}"
+                )
+            self._csv_writer.writerows(
+                _gap_cells(self._next_ssn + row, self._n) for row in range(gap)
             )
         data = self._calibration.convert(raw, self._units, self._tare_raw)
+        start = self._next_ssn + gap
         self._csv_writer.writerows(
-            _row_cells(self._next_ssn + row, raw[row], data[row], self._decimals)
-            for row in range(len(block))
+            _row_cells(start + row, raw[row], data[row], self._decimals)
+            for row in range(packet.rows)
         )
-        self._next_ssn += len(block)
+        self._next_ssn = start + packet.rows
         self._file.flush()
 
     def close(self) -> None:
         if self._file is None:
-            _log.info("CsvRecorder closed with no blocks; no file at %s", self._path)
+            _log.info("CsvRecorder closed with no packets; no file at %s", self._path)
         else:
             self._file.close()
             self._file = None
@@ -363,9 +398,9 @@ def read_csv(path) -> Recording:
     ``raw`` comes from the raw columns, ``data`` from the converted columns
     verbatim (blank cells are NaN, covering both the dropped-sample row
     pattern and the unit-unavailable column pattern), ``t`` is derived from
-    ``ssn`` and ``sample_rate_hz``, ``rows_dropped`` counts the all-blank
-    dropped-sample rows, and ``host_time`` is NaN (a file-sourced
-    block never arrived over a link). The calibration is rebuilt from the
+    ``ssn`` and ``sample_rate_hz``, and ``host_time`` is NaN (a file-sourced
+    recording never arrived over a link). ``rows_dropped`` on the result is
+    derived from the all-blank rows. The calibration is rebuilt from the
     metadata line, so ``Recording.convert`` works without a device; a file
     without metadata inputs gets an unprovisioned calibration (only ``raw``
     converts). Unknown columns and unknown metadata fields are ignored.
@@ -413,7 +448,6 @@ def read_csv(path) -> Recording:
         )
     if np.any(np.diff(ssn) != 1):
         raise CsvFormatError(f"{path}: non-contiguous ssn (rows lost in transit)")
-    rows_dropped = int(np.count_nonzero(np.all(np.isnan(raw), axis=1)))
 
     entries = metadata.get("channels") or []
     tares = [entries[i].get("tare_raw") if i < len(entries) else None for i in range(n)]
@@ -437,7 +471,6 @@ def read_csv(path) -> Recording:
         ssn0=ssn_origin,
         units=units,
         host_time=float("nan"),
-        rows_dropped=rows_dropped,
         sample_rate=sample_rate,
         calibration=Calibration.from_metadata(metadata, n_channels=n),
         tare_raw=tare_raw,

@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 import yaml
 
-from dynamite_sampler.block import Block
 from dynamite_sampler.calibration import FORCE_FACTORS, Calibration
 from dynamite_sampler.csv_io import (
     MAGIC,
@@ -26,6 +25,7 @@ from dynamite_sampler.errors import (
     DynamiteError,
     UnitUnavailable,
 )
+from dynamite_sampler.packet import Packet
 
 # --- The worked example from docs/csv-format-v2.md, verbatim --------------
 
@@ -315,15 +315,14 @@ class _FakeDev:
         self.tare_raw = tare_raw
 
 
-def _block(rows, ssn0):
+def _packet(rows, ssn0, dropped=0):
     raw = np.asarray(rows, dtype=np.float64)
-    return Block(
-        data=raw.copy(),
+    return Packet(
+        time=0.0,
+        ssn=ssn0,
+        rows_dropped=dropped,
+        payload_bytes=2 + 12 * raw.shape[0],
         raw=raw,
-        t=np.arange(raw.shape[0]) / 1000.0,
-        ssn0=ssn0,
-        units="raw",
-        host_time=0.0,
     )
 
 
@@ -332,11 +331,11 @@ def test_recorder_round_trip(tmp_path):
     dev = _FakeDev([1, 1, 1, 1], snapshot)
     cal = Calibration.from_kvs(snapshot, [1, 1, 1, 1])
     path = tmp_path / "rec.csv"
-    recorder = CsvRecorder(dev, path, units="mV/V")
+    recorder = CsvRecorder(dev, path, units="mV/V", calibration=cal)
     rows_a = [[1000, -2000, 300000, -400000], [np.nan] * 4, [5, 6, 7, 8]]
     rows_b = [[9, 10, 11, 12]]
-    recorder.write(_block(rows_a, 100))
-    recorder.write(_block(rows_b, 103))
+    recorder.write(_packet(rows_a, 100))
+    recorder.write(_packet(rows_b, 103))
     recorder.close()
 
     block = read_csv(path)
@@ -354,12 +353,28 @@ def test_recorder_round_trip(tmp_path):
     assert "101,,,,,,,," in text  # the gap row keeps its ssn, blank cells
 
 
-def test_recorder_rejects_noncontiguous_block(tmp_path):
+def test_recorder_writes_packet_gaps_as_blank_rows(tmp_path):
+    """A packet's rows_dropped is written as that many blank rows: the
+    timeline stays contiguous and the drop is visible in the file."""
+    dev = _FakeDev([1, 1], {"F": dict(_NOMINAL_FACTORY), "U": {}})
+    path = tmp_path / "rec.csv"
+    with CsvRecorder(dev, path) as recorder:
+        recorder.write(_packet([[1, 2], [3, 4]], 10))
+        recorder.write(_packet([[9, 10]], 14, dropped=2))
+    loaded = read_csv(path)
+    assert loaded.ssn0 == 10
+    assert np.array_equal(loaded.t, [0.0, 0.001, 0.002, 0.003, 0.004])
+    assert np.isnan(loaded.raw[2:4]).all()
+    assert loaded.rows_dropped == 2
+    assert np.array_equal(loaded.raw[4], [9, 10])
+
+
+def test_recorder_rejects_noncontiguous_packet(tmp_path):
     dev = _FakeDev([1, 1, 1, 1], {"F": dict(_NOMINAL_FACTORY), "U": {}})
     recorder = CsvRecorder(dev, tmp_path / "rec.csv")
-    recorder.write(_block([[1, 2, 3, 4]], 50))
+    recorder.write(_packet([[1, 2, 3, 4]], 50))
     with pytest.raises(CsvFormatError, match="non-contiguous"):
-        recorder.write(_block([[1, 2, 3, 4]], 60))
+        recorder.write(_packet([[1, 2, 3, 4]], 60))
     recorder.close()
 
 
@@ -369,7 +384,7 @@ def test_recorder_force_units_need_load_cells(tmp_path):
         CsvRecorder(dev, tmp_path / "rec.csv", units="kgf")
 
 
-def test_recorder_without_blocks_writes_no_file(tmp_path):
+def test_recorder_without_packets_writes_no_file(tmp_path):
     dev = _FakeDev([1, 1, 1, 1], {"F": dict(_NOMINAL_FACTORY), "U": {}})
     path = tmp_path / "rec.csv"
     CsvRecorder(dev, path).close()
@@ -380,7 +395,7 @@ def test_two_channel_round_trip(tmp_path):
     dev = _FakeDev([1, 1], {"F": dict(_NOMINAL_FACTORY), "U": {}})
     path = tmp_path / "rec.csv"
     with CsvRecorder(dev, path) as recorder:
-        recorder.write(_block([[1, 2], [3, 4]], 7))
+        recorder.write(_packet([[1, 2], [3, 4]], 7))
     block = read_csv(path)
     assert block.raw.shape == (2, 2)
     assert block.data.shape == (2, 2)
@@ -408,15 +423,18 @@ def _calibrated_snapshot():
 
 def _record(tmp_path, unit, snapshot, tare_raw):
     dev = _FakeDev([1, 1, 1, 1], snapshot, tare_raw=tare_raw)
+    calibration = Calibration.from_kvs(snapshot, [1, 1, 1, 1])
     path = tmp_path / "rec.csv"
-    with CsvRecorder(dev, path, units=unit) as recorder:
+    with CsvRecorder(
+        dev, path, units=unit, calibration=calibration, tare_raw=tare_raw
+    ) as recorder:
         recorder.write(
-            _block(
+            _packet(
                 [[1000, -2000, 300000, -400000], [np.nan] * 4, [5, 6, 7, 8]],
                 41230,
             )
         )
-        recorder.write(_block([[9, 10, 11, 12]], 41233))
+        recorder.write(_packet([[9, 10, 11, 12]], 41233))
     return path
 
 

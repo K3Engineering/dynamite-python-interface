@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 """Stream Dynamite sampler data to various locations.
 
-The flags select sinks; a sink is a callable taking one block (or packet),
-its resources held as context managers for the run of the stream. Metrics
-ride the per-packet layer beneath the blocks, fed from the same fan-out
-loop. Defaults to CSV + metrics + the TCP socket demo when nothing is
-selected.
+The flags select sinks; a sink is a callable taking one packet, its resources
+held as context managers for the run of the stream. Metrics and the block-ish
+sinks all ride the one packet feed, so there is no separate assembly loop.
+Defaults to CSV + metrics + the TCP socket demo when nothing is selected.
 """
 
 import argparse
@@ -14,8 +13,6 @@ import contextlib
 import datetime
 import socket
 from typing import Callable
-
-import numpy as np
 
 import dynamite_sampler as dms
 
@@ -36,8 +33,8 @@ def csv_recording_path(file_path_str: str) -> str:
 
 
 class LinkMetrics:
-    """Print link-health metrics on one \\r line, from the packet layer:
-    packets/sec, bytes/sec, rows/sec, and dropped rows."""
+    """Print link-health metrics on one \\r line: packets/sec, bytes/sec,
+    rows/sec, and dropped rows."""
 
     def __init__(self, print_dt: float = 0.5):
         self._print_dt = print_dt
@@ -56,13 +53,14 @@ class LinkMetrics:
             print()
 
     def update(self, packet: dms.Packet) -> None:
-        if self._start is None:
-            self._start = packet.time
-            self._last_print = packet.time
         self._packets += 1
         self._bytes += packet.payload_bytes
         self._rows += packet.rows
         self._dropped += packet.rows_dropped
+        if self._start is None:
+            self._start = packet.time
+            self._last_print = packet.time
+            return
         if packet.time - self._last_print < self._print_dt:
             return
         self._last_print = packet.time
@@ -131,28 +129,21 @@ class WaveformsSocket:
             ),
         }[conversion]
 
-    def send(self, block: dms.Block) -> None:
-        for row in block.raw:
-            if np.isnan(row[0]):
-                # A NaN row is a dropped sample; zero is the receiver's
-                # gap marker.
-                for server in self._servers:
-                    server.send(self._ZERO)
-                continue
+    def send(self, packet: dms.Packet) -> None:
+        # A dropped sample is zero on the receiver's side: it marks the gap.
+        for _ in range(packet.rows_dropped):
+            for server in self._servers:
+                server.send(self._ZERO)
+        for row in packet.raw:
             for server, value in zip(self._servers, row):
                 server.send(int(value).to_bytes(4, "little", signed=True))
 
 
-async def consume(dev, on_packet, on_block, blocksize: int = 100) -> None:
-    """The fan-out loop: packets to the packet sinks, assembled blocks to
-    the block sinks."""
-    assembler = dev.assembler(blocksize)
-    async for packet in dev.stream_packets():
+async def consume(dev, on_packet) -> None:
+    """The fan-out loop: one packet feed, every packet to every sink."""
+    async for packet in dev.stream():
         for fn in on_packet:
             fn(packet)
-        for block in assembler.push(packet):
-            for fn in on_block:
-                fn(block)
 
 
 async def amain(args) -> None:
@@ -161,25 +152,32 @@ async def amain(args) -> None:
             await dev.set_tx_power(args.txpwr)
 
         on_packet: list[Callable[[dms.Packet], None]] = []
-        on_block: list[Callable[[dms.Block], None]] = []
         with contextlib.ExitStack() as stack:
             if args.csv is not None:
+                calibration = await dev.read_calibration()
+                tare = await dev.tare()
                 recorder = stack.enter_context(
-                    dms.CsvRecorder(dev, csv_recording_path(args.csv), units=args.units)
+                    dms.CsvRecorder(
+                        dev,
+                        csv_recording_path(args.csv),
+                        units=args.units,
+                        calibration=calibration,
+                        tare_raw=tare,
+                    )
                 )
-                on_block.append(recorder.write)
+                on_packet.append(recorder.write)
             if args.tqdm:
                 from tqdm import tqdm
 
                 bar = stack.enter_context(tqdm(desc="Samples", unit="samples"))
-                on_block.append(lambda block: bar.update(len(block)))
+                on_packet.append(lambda packet: bar.update(packet.rows))
             if args.socket:
                 socket_sink = WaveformsSocket(dev, conversion=args.conversion)
-                on_block.append(stack.enter_context(socket_sink).send)
+                on_packet.append(stack.enter_context(socket_sink).send)
             if args.metrics:
                 on_packet.append(stack.enter_context(LinkMetrics()).update)
 
-            await consume(dev, on_packet, on_block, blocksize=args.blocksize)
+            await consume(dev, on_packet)
 
 
 def main() -> None:
@@ -216,12 +214,6 @@ def main() -> None:
         default="volts_adc_ir",
         help="unit conversion the socket receiver should divide out "
         "(default: %(default)s)",
-    )
-    parser.add_argument(
-        "--blocksize",
-        type=int,
-        default=100,
-        help="rows per assembled block (default: %(default)s)",
     )
     parser.add_argument(
         "--txpwr", type=int, default=None, help="set the BLE TX power of the board"

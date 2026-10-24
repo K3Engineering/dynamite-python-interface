@@ -22,7 +22,6 @@ concurrent access fails fast with KvsBusy instead of hanging.
 
 import asyncio
 import re
-from types import MappingProxyType
 
 import bleak
 
@@ -237,6 +236,15 @@ class KvsClient:
         """All keys in the namespace."""
         return [key for key, _ in await self.list_entries(folder)]
 
+    async def read_all(self, folder: str) -> dict[str, str]:
+        """Every readable string key in the namespace, as raw KVS strings.
+        Non-string entries (written outside this protocol) are skipped."""
+        return {
+            key: await self.get(folder, key)
+            for key, nvs_type in await self.list_entries(folder)
+            if nvs_type == NVS_TYPE_STR
+        }
+
     async def set_verified(
         self, folder: str, key: str, value: str, attempts: int = 3
     ) -> str:
@@ -256,9 +264,8 @@ class KvsClient:
 
 
 class KvsNamespace:
-    """One folder of a :class:`Kvs`. Writes are verified and update the
-    snapshot, then trigger the device's calibration rebuild. A rebuild
-    failure raises out of the write/delete that caused it."""
+    """One folder of a :class:`Kvs`. Writes are verified against the device's
+    read-back; nothing is cached here."""
 
     def __init__(self, kvs: "Kvs", folder: str):
         self._kvs = kvs
@@ -270,6 +277,10 @@ class KvsNamespace:
     async def keys(self) -> list[str]:
         return await self._kvs._client.keys(self._folder)
 
+    async def read_all(self) -> dict[str, str]:
+        """Every readable string entry in this folder, as raw KVS strings."""
+        return await self._kvs._client.read_all(self._folder)
+
     async def _set_verified(self, key: str, value: str) -> None:
         readback = await self._kvs._client.set_verified(self._folder, key, value)
         if readback != value:
@@ -277,83 +288,60 @@ class KvsNamespace:
                 f"read-back mismatch for {self._folder}:{key}: "
                 f"{readback!r} != {value!r}"
             )
-        self._kvs._namespaces.setdefault(self._folder, {})[key] = readback
 
     async def set(self, key: str, value: str) -> str:
         await self._set_verified(key, value)
-        self._kvs._changed()
         return value
 
     async def set_many(self, entries: dict[str, str]) -> None:
-        """Write several keys as one batch: each is verified and updates the
-        snapshot, then the calibration rebuild runs once at the end. This is
-        how a multi-key group (the ``ch{i}.r``/``ch{i}.raw``/``cal.*`` set)
-        must be written — key-by-key ``set`` would rebuild against a torn
-        group and raise. A failed write aborts the batch with the keys
-        written so far left in place (and no rebuild run)."""
+        """Write several keys as one batch, each verified. A failed write
+        aborts the batch with the keys written so far left in place."""
         for key, value in entries.items():
             await self._set_verified(key, value)
-        self._kvs._changed()
 
     async def set_group(self, entries: dict[str, str], marker: str) -> None:
         """Write a multi-key group replacing any existing one in this folder.
 
         ``marker`` is the group's presence key (``cal.date``). It is deleted
         first and written last, so an interrupted overwrite leaves data keys
-        without the marker — a torn group readers reject — instead of a mix
-        of old and new data that would parse as valid. One calibration
-        rebuild at the end, like :meth:`set_many`."""
+        without the marker -- a torn group readers reject -- instead of a mix
+        of old and new data that would parse as valid."""
         if marker not in entries:
             raise ValueError(f"group entries must include {marker!r}")
-        present = self._kvs._namespaces.get(self._folder, {})
-        if marker in present:
+        if marker in await self.keys():
             await self._kvs._client.delete(self._folder, marker)
-            present.pop(marker)
         for key, value in entries.items():
             if key != marker:
                 await self._set_verified(key, value)
         await self._set_verified(marker, entries[marker])
-        self._kvs._changed()
 
     async def delete(self, key: str) -> None:
         await self._kvs._client.delete(self._folder, key)
-        self._kvs._namespaces.get(self._folder, {}).pop(key, None)
-        self._kvs._changed()
 
 
 class Kvs:
-    """The device's KVS: a read-only raw snapshot plus per-namespace handles.
+    """The device's KVS: three namespace handles over the BLE command client.
 
-    ``set``/``delete`` update the snapshot in place after each verified
-    write (with the read-back values the device just confirmed) rather than
-    re-reading three namespaces over BLE, so ``snapshot`` is a live,
-    read-only view: an indexable ``{folder: {key: raw_string}}`` mapping.
-    The device's ``Calibration`` rebuilds from the snapshot on every change;
-    if the new values don't parse, the rebuild's :class:`CalibrationError`
-    raises out of the change that caused it (the device keeps its last
-    valid calibration — see :class:`KvsNamespace` for batched writes).
+    Nothing is cached: reads hit the device. :meth:`read_all` dumps every
+    folder (what a calibration parse or an export needs), and
+    :meth:`KvsNamespace.read_all` does one folder.
+
+    Writes rebuild no device-side state, because the device stores strings
+    and this library parses them. A calibration group is still written as a
+    batch (:meth:`KvsNamespace.set_many` / :meth:`set_group`) so an
+    interrupted write cannot leave a half-old group behind.
     """
 
     def __init__(self, client: bleak.BleakClient, advertised_name: str):
         self._client = KvsClient(client, advertised_name)
-        self._on_change = None
-        self._namespaces = {}
         self.factory = KvsNamespace(self, FOLDER_FACTORY)
         self.user = KvsNamespace(self, FOLDER_USER)
         self.settings = KvsNamespace(self, FOLDER_SETTINGS)
-
-    @property
-    def snapshot(self):
-        """Read-only view of ``{folder: {key: raw_string}}`` (live)."""
-        return MappingProxyType(
-            {folder: MappingProxyType(ns) for folder, ns in self._namespaces.items()}
-        )
 
     @classmethod
     async def open(cls, client: bleak.BleakClient, advertised_name: str) -> "Kvs":
         kvs = cls(client, advertised_name)
         await kvs._client.start()
-        await kvs.refresh()
         return kvs
 
     async def close(self) -> None:
@@ -366,24 +354,13 @@ class Kvs:
 
     async def get_device_name(self) -> str | None:
         """The user-assigned device name (Settings namespace), or None when
-        unset — the device then goes by its advertised name."""
+        unset -- the device then goes by its advertised name."""
         return await self._client.get_device_name()
 
-    def set_on_change(self, callback):
-        self._on_change = callback
-
-    def _changed(self):
-        if self._on_change is not None:
-            self._on_change(self.snapshot)
-
-    async def refresh(self) -> None:
-        """Re-read every string key of every namespace into the snapshot."""
-        namespaces = {}
-        for folder in (FOLDER_FACTORY, FOLDER_USER, FOLDER_SETTINGS):
-            entries = await self._client.list_entries(folder)
-            namespaces[folder] = {
-                key: await self._client.get(folder, key)
-                for key, nvs_type in entries
-                if nvs_type == NVS_TYPE_STR
-            }
-        self._namespaces = namespaces
+    async def read_all(self) -> dict[str, dict[str, str]]:
+        """Every readable string entry in all three folders, as raw KVS
+        strings: ``{"F": {...}, "U": {...}, "S": {...}}``."""
+        return {
+            folder: await self._client.read_all(folder)
+            for folder in (FOLDER_FACTORY, FOLDER_USER, FOLDER_SETTINGS)
+        }

@@ -13,8 +13,6 @@ import asyncio
 import contextlib
 
 from . import discovery as _discovery
-from .assemble import BlockAssembler
-from .block import Block
 from .calibration import Calibration, LoadCell, Unit
 from .csv_io import CsvRecorder, read_csv
 from .device import (
@@ -65,8 +63,6 @@ __all__ = [
     "AsyncDynamiteSampler",
     "DeviceInfo",
     "UNCONFIGURED",
-    "Block",
-    "BlockAssembler",
     "Packet",
     "Recording",
     "Capture",
@@ -122,7 +118,7 @@ async def aconnect(address: str | FoundDevice | None = None):
     """Async :func:`connect`, as an async context manager::
 
     async with dms.aconnect() as dev:
-        async for block in dev.stream():
+        async for packet in dev.stream():
             ...
     """
     dev = await AsyncDynamiteSampler.connect(address)

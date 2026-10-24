@@ -1,8 +1,9 @@
 """Board calibration, load cells, and the conversion pipeline.
 
-Hardware-free and immutable: ``Calibration.from_kvs`` parses the device's raw
-KVS snapshot and everything downstream (``stream``, ``read``, CSV) converts
-through it. The pipeline is normative in ``docs/csv-format-v2.md``.
+Hardware-free and immutable: ``Calibration.from_kvs`` parses a raw KVS
+snapshot, and everything that converts (``read``, ``stream`` callers, CSV)
+goes through the ``Calibration`` value it produces. The pipeline is normative
+in ``docs/csv-format-v2.md``.
 """
 
 import dataclasses
@@ -305,13 +306,17 @@ class Calibration:
 
     ``board`` is the per-channel raw -> mV/V map, ``None`` when the board has
     no analog constants (``raw`` is the only convertible unit).
+    ``snapshot`` is the raw ``{folder: {key: value}}`` KVS data it was parsed
+    from (``None`` for a calibration rebuilt from a CSV header), kept so a
+    recording can write the device's raw KVS strings into its metadata.
     """
 
-    def __init__(self, channels, load_cells, nominals, group):
+    def __init__(self, channels, load_cells, nominals, group, snapshot=None):
         self._channels = channels
         self.load_cells = load_cells
         self.nominals = nominals
         self._group = group
+        self.snapshot = snapshot
 
     @classmethod
     def from_kvs(
@@ -345,6 +350,7 @@ class Calibration:
                 _parse_load_cells(user, n_channels),
                 None,
                 None,
+                snapshot,
             )
 
         nominals = _resolve_nominals(factory, pga_gains)
@@ -369,6 +375,7 @@ class Calibration:
             _parse_load_cells(user, n_channels),
             nominals,
             group,
+            snapshot,
         )
 
     @classmethod

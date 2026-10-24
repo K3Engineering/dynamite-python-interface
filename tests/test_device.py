@@ -1,4 +1,4 @@
-"""Feed decoding and block assembly, driven through a fake BLE transport."""
+"""Feed decoding and packet streaming, driven through a fake BLE transport."""
 
 import asyncio
 import threading
@@ -15,7 +15,6 @@ from dynamite_sampler.device import (
     _decode_samples,
 )
 from dynamite_sampler.errors import (
-    CalibrationError,
     ConnectionLost,
     DynamiteError,
     MultipleDevicesFound,
@@ -26,10 +25,10 @@ from dynamite_sampler.gatt import ADCConfigData, TxPower
 
 
 class FakeKvs:
-    snapshot = {"F": {}, "U": {}}
+    folder = {"F": {}, "U": {}}
 
-    def set_on_change(self, callback):
-        self.callback = callback
+    async def read_all(self):
+        return self.folder
 
 
 class FakeClient:
@@ -79,39 +78,48 @@ def test_ssn_unwrap_handles_rollover():
     assert unwrapper.unwrap(2, 1) == (65538, 1)
 
 
-async def test_stream_inserts_nan_gap_rows_and_arithmetic_time():
+async def test_stream_yields_packets_with_gaps_counted():
     client = FakeClient()
     device = make_device(client)
-    agen = device.stream(blocksize=3, units="raw")
+    agen = device.stream()
     pending = asyncio.ensure_future(agen.__anext__())
     await wait_notify(client)
     client.notify(None, packet(10, [[1, 2, 3, 4], [5, 6, 7, 8]]))
     client.notify(None, packet(13, [[9, 10, 11, 12]]))  # one dropped
-    block = await pending
+    first = await pending
+    second = await agen.__anext__()
     await agen.aclose()
-    assert block.raw.shape == (3, 4)
-    assert block.ssn0 == 10
-    assert block.rows_dropped == 1
-    assert np.allclose(block.t, [0.0, 0.001, 0.002])
-    assert np.all(np.isnan(block.raw[2]))
-    assert np.all(np.isnan(block.data[2]))
+    assert np.array_equal(first.raw, [[1, 2, 3, 4], [5, 6, 7, 8]])
+    assert first.ssn == 10
+    assert first.rows == 2
+    assert first.rows_dropped == 0
+    assert first.payload_bytes == 2 + 24
+    assert second.ssn == 13
+    assert second.rows_dropped == 1
+    assert second.time >= first.time
 
 
-async def test_stream_converts_units():
+async def test_stream_yields_raw_counts_only():
+    """The packet layer is raw: conversion is the caller's, through an
+    explicit Calibration."""
     client = FakeClient()
-    device = make_device(client)
-    agen = device.stream(blocksize=2, units="raw")
+    device = make_nominal_device(client)
+    agen = device.stream()
     pending = asyncio.ensure_future(agen.__anext__())
     await wait_notify(client)
-    client.notify(None, packet(0, [[100, 200, 300, 400], [1, 2, 3, 4]]))
-    block = await pending
+    client.notify(None, packet(0, [[1000, 0, 0, 0]]))
+    pkt = await pending
     await agen.aclose()
-    assert np.array_equal(block.data, block.raw)
-    assert block.units == "raw"
+    assert not hasattr(pkt, "units")
+    assert np.array_equal(pkt.raw, [[1000, 0, 0, 0]])
 
 
 class NominalKvs(FakeKvs):
-    snapshot = {"F": {"adc_fsr": "1.2", "afe_gain": "15.6", "exc": "4.5"}, "U": {}}
+    folder = {
+        "F": {"adc_fsr": "1.2", "afe_gain": "15.6", "exc": "4.5"},
+        "U": {},
+        "S": {},
+    }
 
 
 def make_nominal_device(client):
@@ -119,46 +127,22 @@ def make_nominal_device(client):
     return AsyncDynamiteSampler(client, None, adc, NominalKvs())
 
 
-async def test_stream_converts_nominal_units_per_block():
+async def test_read_with_an_explicit_calibration_converts():
     client = FakeClient()
     device = make_nominal_device(client)
-    agen = device.stream(blocksize=2, units="mV/V")
-    pending = asyncio.ensure_future(agen.__anext__())
+    calibration = await device.read_calibration()
+    pending = asyncio.ensure_future(
+        device.read(2, units="mV/V", calibration=calibration)
+    )
     await wait_notify(client)
     client.notify(None, packet(0, [[1000, 0, 0, 0], [2000, 0, 0, 0]]))
-    block = await pending
-    await agen.aclose()
-    counts_per_mvv = (1 << 23) * 15.6 * 1 / (1.2 * 1000.0) * 4.5
-    assert block.units == "mV/V"
-    assert np.allclose(block.data[:, 0], [1000 / counts_per_mvv, 2000 / counts_per_mvv])
-    assert np.array_equal(block.raw[:, 0], [1000, 2000])
-
-
-async def test_stream_rereads_tare_raw_each_block():
-    client = FakeClient()
-    device = make_device(client)
-    agen = device.stream(blocksize=2, units="raw")
-    pending = asyncio.ensure_future(agen.__anext__())
-    await wait_notify(client)
-    client.notify(None, packet(0, [[10, 0, 0, 0], [10, 0, 0, 0]]))
-    block1 = await pending
-    device.tare_raw = np.array([5.0, 0.0, 0.0, 0.0])  # mid-stream re-tare
-    pending = asyncio.ensure_future(agen.__anext__())
-    client.notify(None, packet(2, [[10, 0, 0, 0], [10, 0, 0, 0]]))
-    block2 = await pending
-    await agen.aclose()
-    assert block1.data[0, 0] == 10.0  # no tare at this block's conversion
-    assert block2.data[0, 0] == 5.0  # the new tare applies from the next block
-
-
-async def test_calibration_breaking_rebuild_raises_and_keeps_last_good():
-    """A KVS write that leaves the cal data wrong raises out of the rebuild
-    (and hence out of the write); the device keeps its last valid cal."""
-    device = make_nominal_device(FakeClient())
-    assert device.calibration.nominals is not None
-    with pytest.raises(CalibrationError, match="missing"):
-        device._rebuild_calibration({"F": {"adc_fsr": "1.2"}, "U": {}})
-    assert device.calibration.nominals is not None
+    recording = await pending
+    counts_per_mvv = (1 << 23) * 15.6 / (1.2 * 1000.0) * 4.5
+    assert recording.units == "mV/V"
+    assert np.allclose(
+        recording.data[:, 0], [1000 / counts_per_mvv, 2000 / counts_per_mvv]
+    )
+    assert np.array_equal(recording.raw[:, 0], [1000, 2000])
 
 
 class FakePowerClient(FakeClient):
@@ -193,17 +177,32 @@ async def test_set_tx_power_readback_mismatch_raises():
         await device.set_tx_power(-9)
 
 
-async def test_read_returns_one_block_across_packets():
+async def test_read_spans_packets_into_one_recording():
     client = FakeClient()
     device = make_device(client)
     pending = asyncio.ensure_future(device.read(5, units="raw"))
     await wait_notify(client)
     client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]))
     client.notify(None, packet(3, [[13, 14, 15, 16], [17, 18, 19, 20]]))
-    block = await pending
-    assert block.raw.shape == (5, 4)
-    assert block.ssn0 == 0
-    assert np.allclose(block.t, [0.0, 0.001, 0.002, 0.003, 0.004])
+    recording = await pending
+    assert recording.raw.shape == (5, 4)
+    assert recording.ssn0 == 0
+    assert np.allclose(recording.t, [0.0, 0.001, 0.002, 0.003, 0.004])
+
+
+async def test_read_inserts_nan_gap_rows_and_keeps_ssn_arithmetic():
+    client = FakeClient()
+    device = make_device(client)
+    pending = asyncio.ensure_future(device.read(4, units="raw"))
+    await wait_notify(client)
+    client.notify(None, packet(10, [[1, 2, 3, 4]]))
+    client.notify(None, packet(13, [[9, 10, 11, 12]]))  # two dropped
+    recording = await pending
+    assert recording.ssn0 == 10
+    assert np.isnan(recording.raw[1:3]).all()
+    assert np.array_equal(recording.raw[0], [1, 2, 3, 4])
+    assert np.array_equal(recording.raw[3], [9, 10, 11, 12])
+    assert recording.rows_dropped == 2
 
 
 async def test_read_releases_the_feed_deterministically():
@@ -226,7 +225,7 @@ async def test_read_releases_the_feed_deterministically():
 async def test_stream_close_releases_the_feed_deterministically():
     client = FakeClient()
     device = make_device(client)
-    agen = device.stream(blocksize=2, units="raw")
+    agen = device.stream()
     pending = asyncio.ensure_future(agen.__anext__())
     await wait_notify(client)
     client.notify(None, packet(0, [[1, 2, 3, 4]] * 2))
@@ -242,27 +241,25 @@ async def test_read_times_out_without_rows():
         await device.read(5, units="raw", timeout=0.05)
 
 
-async def test_block_host_time_is_first_packet():
+async def test_packet_time_is_its_arrival():
     client = FakeClient()
     device = make_device(client)
-    agen = device.stream(blocksize=3, units="raw")
+    agen = device.stream()
     pending = asyncio.ensure_future(agen.__anext__())
     await wait_notify(client)
     t0 = time.monotonic()
-    client.notify(None, packet(0, [[1, 2, 3, 4]]))  # first packet
-    await asyncio.sleep(0.02)  # let the assembler process it
+    client.notify(None, packet(0, [[1, 2, 3, 4]]))
+    pkt = await pending
     t1 = time.monotonic()
-    client.notify(None, packet(1, [[5, 6, 7, 8], [9, 10, 11, 12]]))
-    block = await pending
     await agen.aclose()
-    assert t0 <= block.host_time < t1
+    assert t0 <= pkt.time <= t1
 
 
 async def test_stream_connection_lost_mid_stream():
     client = FakeClient()
     event = asyncio.Event()
     device = make_device(client, disconnected=event)
-    agen = device.stream(blocksize=3, units="raw")
+    agen = device.stream()
     pending = asyncio.ensure_future(agen.__anext__())
     await wait_notify(client)
     event.set()
@@ -274,11 +271,11 @@ async def test_stream_connection_lost_mid_stream():
 async def test_second_stream_while_active_raises():
     client = FakeClient()
     device = make_device(client)
-    agen = device.stream(blocksize=3, units="raw")
+    agen = device.stream()
     pending = asyncio.ensure_future(agen.__anext__())
     await wait_notify(client)
     with pytest.raises(StreamActive):
-        await device.stream(blocksize=3, units="raw").__anext__()
+        await device.stream().__anext__()
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pending

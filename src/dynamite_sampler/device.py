@@ -2,7 +2,6 @@
 
 import asyncio
 import concurrent.futures
-import contextlib
 import dataclasses
 import datetime
 import threading
@@ -11,7 +10,6 @@ import time
 import bleak
 import numpy as np
 
-from .assemble import BlockAssembler, _blocks_from_packets
 from .calibration import Calibration, Unit
 from .csv_io import _GENERATOR, CsvRecorder, device_metadata, read_csv
 from .discovery import find_single
@@ -35,7 +33,6 @@ ADCConfig = DynamiteSamplerService.ADCConfig
 UNCONFIGURED = "UNCONFIGURED"
 
 QUEUE_SECONDS = 4
-DEFAULT_BLOCKSIZE = 100
 DEFAULT_READ_TIMEOUT_S = 5.0
 
 # Poll granularity of the sync facade's wait, so Ctrl+C lands promptly on
@@ -101,27 +98,32 @@ class SsnUnwrapper:
 
 
 class AsyncDynamiteSampler:
-    """Async device: connect, stream, read, tare, and KVS access."""
+    """Async device: connect, stream packets, read, tare, and KVS access.
+
+    The device object holds no measurement state. There is no calibration or
+    tare cached on it: :meth:`read_calibration` parses one from the KVS on
+    demand, :meth:`tare` returns a tare array, and :meth:`stream` yields raw
+    counts. Everything a capture needs is passed in explicitly.
+    """
 
     def __init__(self, client, info, adc_config, kvs, disconnected=None):
         self._client = client
         self.info = info
         self._adc_config = adc_config
         self.kvs = kvs
-        self._pga_gains = None if adc_config is None else list(adc_config.gains)
-        self.tare_raw = None
         self._active = False
         self._disconnected = (
             disconnected if disconnected is not None else asyncio.Event()
         )
-        # The initial parse raises CalibrationError (present and wrong
-        # fails connect); a later rebuild failure raises out of the write.
-        self.calibration = Calibration.from_kvs(kvs.snapshot, self._pga_gains)
-        kvs.set_on_change(self._rebuild_calibration)
 
     @classmethod
     async def connect(cls, address=None):
-        """Connect to the one device in range (or the one at ``address``)."""
+        """Connect to the one device in range (or the one at ``address``).
+
+        Reads the identity and ADC characteristics and subscribes to the
+        KVS. It does not read the KVS itself, so a board with unprovisioned,
+        half-written, or stale keys still connects — which is what repairing
+        such a board needs."""
         found = await find_single(address)
         disconnected = asyncio.Event()
         state = {"kvs": None}
@@ -184,17 +186,6 @@ class AsyncDynamiteSampler:
         if self._client.is_connected:
             await self._client.disconnect()
 
-    def _rebuild_calibration(self, snapshot):
-        """Rebuild after a KVS write. A write that leaves the cal data wrong
-        raises here — out of the write that caused it; ``calibration``
-        keeps its last valid value."""
-        self.calibration = Calibration.from_kvs(snapshot, self._pga_gains)
-
-    def assembler(self, blocksize: int = DEFAULT_BLOCKSIZE) -> BlockAssembler:
-        """A :class:`BlockAssembler` for this device's sample rate."""
-        config = self._require_adc()
-        return BlockAssembler(config.sample_rate, blocksize)
-
     def _require_adc(self):
         if self._adc_config is None:
             raise ProvisioningError(
@@ -209,6 +200,14 @@ class AsyncDynamiteSampler:
     @property
     def gains(self) -> list[int] | None:
         return None if self._adc_config is None else list(self._adc_config.gains)
+
+    async def read_calibration(self) -> Calibration:
+        """Parse the device's calibration from its raw KVS data.
+
+        Raises :class:`CalibrationError` on data that is present and wrong.
+        Nothing is cached: call it whenever a capture needs the conversion,
+        and pass the result where it is used."""
+        return Calibration.from_kvs(await self.kvs.read_all(), self.gains)
 
     async def read_tx_power_dbm(self) -> int | None:
         """Live read of the DIS TX Power Level (None if unreadable). Read per
@@ -227,25 +226,16 @@ class AsyncDynamiteSampler:
             )
         return readback
 
-    async def stream_packets(
-        self, units: Unit = "raw", inactivity_timeout: float | None = None
-    ):
+    async def stream(self, inactivity_timeout: float | None = None):
         """Infinite async generator of :class:`Packet`: one item per BLE
-        notification.
+        notification, in raw counts.
 
-        The layer beneath :meth:`stream`: consume it directly for
-        per-packet latency (closed-loop control), link metrics, or both,
-        folding it into blocks with your own :class:`BlockAssembler` (or
-        :meth:`assembler`) when blocks are needed too. ``raw`` is always
-        counts; ``data``/``units`` are the converted view — the packet
-        layer is not raw-only, so a control loop can run in force. The
-        calibration is frozen at the stream's start; ``tare_raw`` is read
-        per packet. ``inactivity_timeout`` raises :class:`ReadTimeout`
-        after that many seconds without a packet.
+        ``rows_dropped`` counts the samples lost since the previous packet,
+        so the sample timeline is those rows then ``raw``.
+        ``inactivity_timeout`` raises :class:`ReadTimeout` after that many
+        seconds without a packet.
         """
         config = self._require_adc()
-        calibration = self.calibration
-        calibration.check_units(units)
         if self._active:
             raise StreamActive("a stream or read is already active")
         self._active = True
@@ -272,16 +262,14 @@ class AsyncDynamiteSampler:
                 except asyncio.TimeoutError:
                     raise ReadTimeout(f"no rows for {inactivity_timeout} s") from None
                 ssn, payload = DynamiteSamplerService.ADCFeed.split(data)
-                samples = _decode_samples(payload, num_channels)
-                unwrapped, missed = unwrapper.unwrap(ssn, samples.shape[0])
+                raw = _decode_samples(payload, num_channels)
+                unwrapped, missed = unwrapper.unwrap(ssn, raw.shape[0])
                 yield Packet(
                     time=time.monotonic(),
                     ssn=unwrapped,
                     rows_dropped=missed,
                     payload_bytes=len(data),
-                    raw=samples,
-                    data=calibration.convert(samples, units, self.tare_raw),
-                    units=units,
+                    raw=raw,
                 )
         finally:
             disc.cancel()
@@ -289,42 +277,127 @@ class AsyncDynamiteSampler:
                 await self._client.stop_notify(DynamiteSamplerService.ADCFeed.UUID)
             self._active = False
 
-    async def _stream_blocks(self, blocksize, units, inactivity_timeout=None):
-        """Blocks out of the packet feed, converted per block.
-
-        The calibration is frozen at the stream's start; ``tare_raw`` is
-        read per block, so a mid-stream re-tare takes effect on the next
-        block."""
+    async def tare(self, n: int | None = None) -> np.ndarray:
+        """Average ``n`` raw samples per channel (default 1 s of feed) and
+        return the result. Storing it is the caller's job. Raises
+        :class:`TareError` if any channel got no valid samples."""
         config = self._require_adc()
-        calibration = self.calibration
-        calibration.check_units(units)
-        assembler = BlockAssembler(config.sample_rate, blocksize)
-        # aclosing: without an explicit aclose the packet generator's
-        # teardown (stop notify, _active = False) waits for asyncgen
-        # finalization, and the next read() races it into StreamActive.
-        async with contextlib.aclosing(
-            self.stream_packets(inactivity_timeout=inactivity_timeout)
-        ) as packets:
-            async for block in _blocks_from_packets(packets, assembler):
-                # convert() copies (even for "raw"): a user mutating .data
-                # must never corrupt .raw.
-                yield dataclasses.replace(
-                    block,
-                    data=calibration.convert(block.raw, units, self.tare_raw),
-                    units=units,
-                )
+        if n is None:
+            n = config.sample_rate
+        if n < 1:
+            raise ValueError("n must be >= 1")
+        raw, _, _ = await self._read_rows(n, timeout=DEFAULT_READ_TIMEOUT_S)
+        valid = np.count_nonzero(~np.isnan(raw), axis=0)
+        if np.any(valid == 0):
+            empty = [int(i) for i in np.nonzero(valid == 0)[0]]
+            raise TareError(f"tare failed: no valid samples on channel(s) {empty}")
+        return np.nanmean(raw, axis=0)
 
-    async def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: str = "raw"):
-        """Infinite async generator of :class:`Block`.
+    async def _read_rows(self, n: int, timeout: float):
+        """(rows, ssn0, first_packet_time): exactly ``n`` rows off the feed,
+        or :class:`ReadTimeout`.
 
-        Sugar over :meth:`stream_packets` + :class:`BlockAssembler`;
-        compose those directly to consume both layers.
+        Dropped samples inside the window appear as NaN rows, so row ``i`` is
+        sample ``ssn0 + i``. The first packet's gap is 0 (the unwrapper has no
+        earlier packet to compare against), so the window always starts on a
+        real sample."""
+        agen = self.stream(inactivity_timeout=timeout)
+        try:
+            parts = []
+            ssn0 = None
+            host_time = None
+            got = 0
+            while got < n:
+                packet = await agen.__anext__()
+                if ssn0 is None:
+                    ssn0 = packet.ssn
+                    host_time = packet.time
+                parts.extend(_packet_parts(packet))
+                got += packet.rows_dropped + packet.rows
+            return np.concatenate(parts)[:n], ssn0, host_time
+        finally:
+            await agen.aclose()
+
+    async def _read_raw(
+        self, n: int, *, units: Unit, calibration, tare_raw, timeout: float
+    ) -> Recording:
+        config = self._require_adc()
+        raw, ssn0, host_time = await self._read_rows(n, timeout)
+        return Recording(
+            data=calibration.convert(raw, units, tare_raw),
+            raw=raw,
+            t=np.arange(n) / config.sample_rate,
+            ssn0=ssn0,
+            units=units,
+            host_time=host_time,
+            sample_rate=config.sample_rate,
+            calibration=calibration,
+            tare_raw=None if tare_raw is None else np.array(tare_raw),
+            recorded_at=datetime.datetime.now().astimezone(),
+            device=device_metadata(self.info, config.gains, calibration),
+            generator=_GENERATOR,
+        )
+
+    async def read(
+        self,
+        n: int | None = None,
+        *,
+        seconds: float | None = None,
+        units: Unit = "raw",
+        calibration: Calibration | None = None,
+        tare_raw=None,
+        timeout: float = DEFAULT_READ_TIMEOUT_S,
+    ) -> Recording:
+        """Exactly ``n`` rows (or ``seconds`` of feed, rounded to rows), or
+        :class:`ReadTimeout`. Returns a :class:`Recording`: the rows with the
+        conversion inputs frozen in, ready for
+        ``to_csv``/``to_dataframe``/``convert``.
+
+        The ``Calibration`` is the one passed, or the device's own, parsed
+        (one KVS dump). A Recording is a self-describing artifact, so it
+        always carries a usable calibration — pass one to skip the dump.
         """
-        # Same aclosing need as _stream_blocks: closing this generator must
-        # release the feed deterministically, not at asyncgen finalization.
-        async with contextlib.aclosing(self._stream_blocks(blocksize, units)) as blocks:
-            async for block in blocks:
-                yield block
+        if (n is None) == (seconds is None):
+            raise ValueError("exactly one of n or seconds")
+        config = self._require_adc()
+        if seconds is not None:
+            n = max(1, round(seconds * config.sample_rate))
+        if n < 1:
+            raise ValueError("n must be >= 1")
+        if calibration is None:
+            calibration = await self.read_calibration()
+        calibration.check_units(units)
+        return await self._read_raw(
+            n,
+            units=units,
+            calibration=calibration,
+            tare_raw=None if tare_raw is None else np.array(tare_raw),
+            timeout=timeout,
+        )
+
+    def recording(
+        self,
+        units: Unit = "raw",
+        path=None,
+        calibration: Calibration | None = None,
+        tare_raw=None,
+    ) -> "AsyncCapture":
+        """An open-ended background capture, as an async context manager.
+
+        With ``path`` packets stream through a :class:`CsvRecorder` to disk
+        and never accumulate in memory (hours-long runs; a crash still
+        leaves a valid, flushed file), and the :class:`Recording` is loaded
+        back from the file on exit. Without a path they accumulate in memory
+        — the bounded-capture form. On exit (or ``stop()``) the partial data
+        is finalized into :attr:`AsyncCapture.recording`, including on an
+        exception in the body: a Ctrl+C ends the capture, it does not lose
+        it. An acquisition failure mid-capture (:class:`ConnectionLost`,
+        :class:`BufferOverrun`) finalizes what arrived and re-raises on exit.
+        """
+        self._require_adc()
+        if calibration is not None:
+            calibration.check_units(units)
+        return AsyncCapture(self, units, path, calibration, tare_raw)
 
     async def _wait_packet(self, queue, disc, timeout):
         """The next queued packet, or raise ConnectionLost / asyncio.TimeoutError."""
@@ -342,86 +415,6 @@ class AsyncDynamiteSampler:
             raise ConnectionLost("device disconnected mid-stream")
         raise asyncio.TimeoutError
 
-    async def read(
-        self,
-        n: int | None = None,
-        *,
-        seconds: float | None = None,
-        units: Unit = "raw",
-        timeout: float = DEFAULT_READ_TIMEOUT_S,
-    ) -> Recording:
-        """Exactly ``n`` rows (or ``seconds`` of feed, rounded to rows),
-        or :class:`ReadTimeout`. Returns a :class:`Recording`: the rows
-        with the calibration, tare, and device snapshot frozen in, ready
-        for ``to_csv``/``to_dataframe``/``convert``.
-        """
-        if (n is None) == (seconds is None):
-            raise ValueError("exactly one of n or seconds")
-        config = self._require_adc()
-        calibration = self.calibration
-        if seconds is not None:
-            n = max(1, round(seconds * config.sample_rate))
-        if n < 1:
-            raise ValueError("n must be >= 1")
-        tare = None if self.tare_raw is None else np.array(self.tare_raw)
-        agen = self._stream_blocks(n, units, inactivity_timeout=timeout)
-        try:
-            block = await agen.__anext__()
-            return Recording.from_block(
-                block,
-                sample_rate=config.sample_rate,
-                calibration=calibration,
-                tare_raw=tare,
-                recorded_at=datetime.datetime.now().astimezone(),
-                device=device_metadata(
-                    self.info, config.gains, calibration, self.kvs.snapshot
-                ),
-                generator=_GENERATOR,
-            )
-        finally:
-            await agen.aclose()
-
-    def recording(
-        self,
-        units: Unit = "raw",
-        path=None,
-        blocksize: int = DEFAULT_BLOCKSIZE,
-    ) -> "AsyncCapture":
-        """An open-ended background capture, as an async context manager.
-
-        Blocks are consumed on a task of this device's loop (the caller's
-        code — driving a rig, sleeping, plotting — runs meanwhile). With
-        ``path`` they stream through a :class:`CsvRecorder` to disk and
-        never accumulate in memory (hours-long runs; a crash still leaves
-        a valid, flushed file), and the :class:`Recording` is loaded back
-        from the file on exit. Without ``path`` they accumulate in memory
-        — the bounded-capture form. On exit (or ``stop()``), the partial
-        data is finalized into :attr:`AsyncCapture.recording`, including
-        on an exception in the body: a Ctrl+C ends the capture, it does
-        not lose it. An acquisition failure mid-capture
-        (:class:`ConnectionLost`, :class:`BufferOverrun`) finalizes what
-        arrived and re-raises on exit. The feed is held for the capture's
-        duration: ``read``/``tare``/another stream raise ``StreamActive``,
-        KVS raises ``KvsBusy``.
-        """
-        self._require_adc()
-        self.calibration.check_units(units)
-        return AsyncCapture(self, units, path, blocksize)
-
-    async def tare(self, n=None):
-        """Average ``n`` raw samples per channel into ``tare_raw`` (default
-        1 s of feed). Raises if any channel got no valid samples."""
-        config = self._require_adc()
-        if n is None:
-            n = config.sample_rate
-        block = await self.read(n, units="raw")
-        valid = np.count_nonzero(~np.isnan(block.raw), axis=0)
-        if np.any(valid == 0):
-            empty = [int(i) for i in np.nonzero(valid == 0)[0]]
-            raise TareError(f"tare failed: no valid samples on channel(s) {empty}")
-        self.tare_raw = np.nanmean(block.raw, axis=0)
-        return self.tare_raw
-
 
 class AsyncCapture:
     """The async context manager returned by
@@ -429,23 +422,23 @@ class AsyncCapture:
 
     Yielded on entry; while the capture runs, :attr:`rows` counts samples
     arrived. After exit (or :meth:`stop`), :attr:`recording` holds the
-    finalized :class:`Recording` (``None`` only if nothing arrived: no
-    block, no ``ssn_origin``). A path-backed recording is loaded back from
-    its own file — the same shape ``read_csv`` returns: ``host_time`` is
-    NaN and ``data`` is the file's fixed-point conversion.
+    finalized :class:`Recording` (``None`` only if nothing arrived). A
+    path-backed recording is loaded back from its own file — the same shape
+    ``read_csv`` returns: ``host_time`` is NaN and ``data`` is the file's
+    fixed-point conversion.
     """
 
-    def __init__(self, dev, units, path, blocksize):
+    def __init__(self, dev, units, path, calibration, tare_raw):
         self._dev = dev
         self._units = units
         self._path = path
-        self._blocksize = blocksize
-        self._blocks = []
+        self._calibration = calibration
+        self._tare_raw = None if tare_raw is None else np.array(tare_raw)
+        self._raw = []
         self._rows = 0
         self._recorder = None
         self._task = None
         self._frozen = None
-        self._sample_rate = None
         self._finalized = False
         self.recording: Recording | None = None
 
@@ -457,19 +450,27 @@ class AsyncCapture:
     async def __aenter__(self) -> "AsyncCapture":
         dev = self._dev
         config = dev._require_adc()
-        self._sample_rate = config.sample_rate
-        if self._path is not None:
-            # File-first: the recorder writes every block through; the
-            # conversion inputs freeze inside it (constructor re-checks
-            # units against its own fresh parse).
-            self._recorder = CsvRecorder(dev, self._path, units=self._units)
+        calibration = self._calibration
+        if calibration is None and self._units != "raw":
+            calibration = await dev.read_calibration()
+        if calibration is not None:
+            calibration.check_units(self._units)
         else:
-            calibration = dev.calibration
-            self._frozen = (
-                calibration,
-                None if dev.tare_raw is None else np.array(dev.tare_raw),
-                datetime.datetime.now().astimezone(),
-                device_metadata(dev.info, config.gains, calibration, dev.kvs.snapshot),
+            calibration = Calibration.from_kvs({}, config.gains)
+        self._frozen = (
+            calibration,
+            self._tare_raw,
+            config.sample_rate,
+            datetime.datetime.now().astimezone(),
+            device_metadata(dev.info, config.gains, calibration),
+        )
+        if self._path is not None:
+            self._recorder = CsvRecorder(
+                dev,
+                self._path,
+                units=self._units,
+                calibration=calibration,
+                tare_raw=self._tare_raw,
             )
         self._task = asyncio.ensure_future(self._pump())
         return self
@@ -484,22 +485,12 @@ class AsyncCapture:
             await self._finish(None)
 
     async def _pump(self):
-        assembler = BlockAssembler(self._sample_rate, self._blocksize)
-        async for block in _blocks_from_packets(self._dev.stream_packets(), assembler):
+        async for packet in self._dev.stream():
             if self._recorder is not None:
-                # The recorder converts the raw block itself, through its
-                # own frozen calibration; nothing is kept in memory.
-                self._recorder.write(block)
+                self._recorder.write(packet)
             else:
-                calibration, tare, _, _ = self._frozen
-                self._blocks.append(
-                    dataclasses.replace(
-                        block,
-                        data=calibration.convert(block.raw, self._units, tare),
-                        units=self._units,
-                    )
-                )
-            self._rows += len(block)
+                self._raw.append(packet)
+            self._rows += packet.rows
 
     async def _finish(self, body_exc):
         if self._finalized:
@@ -531,7 +522,7 @@ class AsyncCapture:
             # Recording back from it. Nothing arrived -> no file -> None.
             if self._rows:
                 self.recording = await asyncio.to_thread(read_csv, self._path)
-        elif self._blocks:
+        elif self._raw:
             self.recording = self._join()
         # A body exception (Ctrl+C included) wins; an acquisition failure is
         # raised here only when the body itself was clean.
@@ -539,22 +530,31 @@ class AsyncCapture:
             raise task_error
 
     def _join(self) -> Recording:
-        calibration, tare, recorded_at, device_meta = self._frozen
+        calibration, tare, sample_rate, recorded_at, device_meta = self._frozen
+        raw = np.concatenate(
+            [part for packet in self._raw for part in _packet_parts(packet)]
+        )
         return Recording(
-            data=np.concatenate([block.data for block in self._blocks]),
-            raw=np.concatenate([block.raw for block in self._blocks]),
-            t=np.concatenate([block.t for block in self._blocks]),
-            ssn0=self._blocks[0].ssn0,
+            data=calibration.convert(raw, self._units, tare),
+            raw=raw,
+            t=np.arange(raw.shape[0]) / sample_rate,
+            ssn0=self._raw[0].ssn,
             units=self._units,
-            host_time=self._blocks[0].host_time,
-            rows_dropped=sum(block.rows_dropped for block in self._blocks),
-            sample_rate=self._sample_rate,
+            host_time=self._raw[0].time,
+            sample_rate=sample_rate,
             calibration=calibration,
             tare_raw=tare,
             recorded_at=recorded_at,
             device=device_meta,
             generator=_GENERATOR,
         )
+
+
+def _packet_parts(packet: Packet):
+    """A packet's timeline as arrays: its gap rows (NaN) then its samples."""
+    if packet.rows_dropped:
+        yield np.full((packet.rows_dropped, packet.raw.shape[1]), np.nan)
+    yield packet.raw
 
 
 def _block_on(coro, loop):
@@ -616,6 +616,9 @@ class _SyncNamespace:
     def keys(self) -> list[str]:
         return self._dev._run(self._ns.keys())
 
+    def read_all(self) -> dict[str, str]:
+        return self._dev._run(self._ns.read_all())
+
 
 class _SyncKvs:
     def __init__(self, dev):
@@ -624,9 +627,8 @@ class _SyncKvs:
         self.user = _SyncNamespace(dev, dev._async.kvs.user)
         self.settings = _SyncNamespace(dev, dev._async.kvs.settings)
 
-    @property
-    def snapshot(self):
-        return self._dev._async.kvs.snapshot
+    def read_all(self) -> dict[str, dict[str, str]]:
+        return self._dev._run(self._dev._async.kvs.read_all())
 
     def get_device_name(self) -> str | None:
         return self._dev._run(self._dev._async.kvs.get_device_name())
@@ -698,27 +700,14 @@ class DynamiteSampler:
     def gains(self) -> list[int] | None:
         return self._async.gains
 
+    def read_calibration(self) -> Calibration:
+        return self._run(self._async.read_calibration())
+
     def read_tx_power_dbm(self) -> int | None:
         return self._run(self._async.read_tx_power_dbm())
 
     def set_tx_power(self, dbm: int) -> int:
         return self._run(self._async.set_tx_power(dbm))
-
-    @property
-    def calibration(self) -> Calibration:
-        return self._async.calibration
-
-    @property
-    def tare_raw(self):
-        return self._async.tare_raw
-
-    @tare_raw.setter
-    def tare_raw(self, value):
-        self._async.tare_raw = value
-
-    def assembler(self, blocksize: int = DEFAULT_BLOCKSIZE) -> BlockAssembler:
-        """A :class:`BlockAssembler` for this device's sample rate."""
-        return self._async.assembler(blocksize)
 
     def read(
         self,
@@ -726,29 +715,39 @@ class DynamiteSampler:
         *,
         seconds: float | None = None,
         units: Unit = "raw",
+        calibration: Calibration | None = None,
+        tare_raw=None,
         timeout: float = DEFAULT_READ_TIMEOUT_S,
     ) -> Recording:
         """Exactly ``n`` rows (or ``seconds`` of feed), or :class:`ReadTimeout`;
         the result is a :class:`Recording`."""
         return self._run(
-            self._async.read(n, seconds=seconds, units=units, timeout=timeout)
+            self._async.read(
+                n,
+                seconds=seconds,
+                units=units,
+                calibration=calibration,
+                tare_raw=tare_raw,
+                timeout=timeout,
+            )
         )
 
-    def tare(self, n=None):
+    def tare(self, n: int | None = None):
         return self._run(self._async.tare(n))
 
     def recording(
         self,
         units: Unit = "raw",
         path=None,
-        blocksize: int = DEFAULT_BLOCKSIZE,
+        calibration: Calibration | None = None,
+        tare_raw=None,
     ) -> "Capture":
         """An open-ended background capture, as a context manager; see
         :meth:`AsyncDynamiteSampler.recording`. The pump runs on this
         facade's private loop, so the ``with`` body owns the main thread:
         drive the rig, wait, plot — a Ctrl+C ends the capture with the
         partial data intact on :attr:`Capture.recording`."""
-        return Capture(self, self._async.recording(units, path, blocksize))
+        return Capture(self, self._async.recording(units, path, calibration, tare_raw))
 
     def _iter_async(self, agen):
         try:
@@ -761,12 +760,13 @@ class DynamiteSampler:
             if self._loop is not None:
                 self._run(agen.aclose())
 
-    def stream(self, blocksize: int = DEFAULT_BLOCKSIZE, units: Unit = "raw"):
-        return self._iter_async(self._async.stream(blocksize, units))
+    def stream(self, inactivity_timeout: float | None = None):
+        """Infinite generator of :class:`Packet`, one per BLE notification.
 
-    # No sync stream_packets: one cross-thread hop per BLE notification
-    # defeats the point of the packet layer (latency, link metrics). Use
-    # AsyncDynamiteSampler for packets.
+        The sync form blocks the calling thread between packets. For a
+        background capture use :meth:`recording`; for a GUI event loop use a
+        thread or the async class."""
+        return self._iter_async(self._async.stream(inactivity_timeout))
 
 
 class Capture:

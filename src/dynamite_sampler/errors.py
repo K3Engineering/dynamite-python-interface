@@ -63,12 +63,12 @@ class CalibrationError(DynamiteError):
 
     A torn calibration group, mixed/partial channels, invalid ladder data, a
     stale ``cal.adc``, or orphaned calibration keys without their constants.
-    Raised by ``connect()``."""
+    Raised by ``read_calibration()``."""
 
 
 class CsvFormatError(DynamiteError):
     """A dynamite-csv file is malformed (read) or the recording's inputs are
-    inconsistent (write: non-contiguous blocks, wrong channel count)."""
+    inconsistent (write: a non-contiguous packet, wrong channel count)."""
 
 
 class KvsError(DynamiteError):
