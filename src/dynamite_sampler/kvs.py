@@ -27,7 +27,7 @@ import re
 
 import bleak
 
-from dynamite_sampler_bleak_util import find_dynamite_samplers
+from .bleak_util import find_dynamite_samplers
 
 __all__ = [
     "KVS_CHR_UUID",
@@ -154,8 +154,7 @@ class KvsClient:
             raise KvsError("No dynamite sampler devices found")
         else:
             found = "\n".join(
-                f"  {d.address}  {d.name}  (RSSI {adv.rssi} dBm)"
-                for d, adv in devices
+                f"  {d.address}  {d.name}  (RSSI {adv.rssi} dBm)" for d, adv in devices
             )
             raise KvsError(f"{len(devices)} devices found, pass --address:\n{found}")
 

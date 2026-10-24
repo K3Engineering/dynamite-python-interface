@@ -1,13 +1,15 @@
 import asyncio
 from typing import Iterable, Optional
 
-import dynamite_sampler_api as ds
-
 import bleak
+from bleak import AdvertisementData, BLEDevice
+
+from . import api as ds
 
 
 class NotifyCallbackRawData:
-    """Abstract callback class for handling raw data from dynamite sampler on notify messages."""
+    """Abstract callback class for handling raw data from dynamite sampler
+    on notify messages."""
 
     def setup(self, device_dict: dict):
         """Setup is called after being connected to a dynamite sampler.
@@ -22,7 +24,8 @@ class NotifyCallbackRawData:
 
 
 class NotifyCallbackFeeddatas:
-    """Abstract callback class for handling parsed data from dynamite sampler on notify messages."""
+    """Abstract callback class for handling parsed data from dynamite sampler
+    on notify messages."""
 
     def setup(self, device_dict: dict):
         """Setup is called after being connected to a dynamite sampler.
@@ -34,7 +37,8 @@ class NotifyCallbackFeeddatas:
     ):
         """Parsed header with the sample sequence number unwrapped
         List of sample feed data
-        Count of samples missed (BLE dropped) since the last time this callback was called
+        Count of samples missed (BLE dropped) since the last time this
+        callback was called
         """
         pass
 
@@ -42,9 +46,7 @@ class NotifyCallbackFeeddatas:
         pass
 
 
-async def find_dynamite_samplers() -> (
-    list[tuple[bleak.BLEDevice, bleak.AdvertisementData]]
-):
+async def find_dynamite_samplers() -> list[tuple[BLEDevice, AdvertisementData]]:
     """Return a list of devices & advertising that have a Dynamite sampler UUID.
     List is sorted by RSSI"""
     devices_and_adv = await bleak.BleakScanner.discover(
@@ -263,7 +265,8 @@ async def dynamite_sampler_connect_notify(
     async with bleak.BleakClient(device) as client:
         print("Connected!")
 
-        # TODO this is temporary, have the power setting be passed it, or have a callback
+        # TODO this is temporary, have the power setting be passed in,
+        # or have a callback
         if tx_power is not None:
             print(f"Setting TX power to {tx_power} dBm")
             await write_characteristic(client, ds.TxPower.TxPowerSet, tx_power)
