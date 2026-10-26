@@ -17,6 +17,21 @@ class ConnectionLost(DynamiteError):
     """The BLE link dropped (mid-stream, or during a command)."""
 
 
+class UnitUnavailable(DynamiteError):
+    """The requested unit cannot be produced on every channel.
+
+    `mV`/`mV/V`/force need the board's analog constants; force additionally
+    needs a load cell in every channel's slot. `raw` always converts."""
+
+
+class CalibrationError(DynamiteError):
+    """Board calibration data is present and unusable.
+
+    A torn calibration group, mixed/partial channels, invalid ladder data, a
+    stale ``cal.adc``, or orphaned calibration keys without their constants.
+    Raised by ``Calibration.from_kvs()``."""
+
+
 class KvsError(DynamiteError):
     """Base for KVS command failures."""
 

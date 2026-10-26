@@ -1,6 +1,8 @@
 """Dynamite Sampler Python API."""
 
+from .calibration import Calibration, LoadCell, Unit
 from .errors import (
+    CalibrationError,
     ConnectionLost,
     DeviceNotFound,
     DynamiteError,
@@ -14,15 +16,22 @@ from .errors import (
     OtaError,
     OtaRejected,
     OtaTimeout,
+    UnitUnavailable,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "Unit",
+    "Calibration",
+    "LoadCell",
     "DynamiteError",
+    "FirmwareCatalogError",
     "DeviceNotFound",
     "MultipleDevicesFound",
     "ConnectionLost",
+    "UnitUnavailable",
+    "CalibrationError",
     "KvsError",
     "KvsRejected",
     "KvsBusy",
@@ -31,5 +40,4 @@ __all__ = [
     "OtaError",
     "OtaRejected",
     "OtaTimeout",
-    "FirmwareCatalogError",
 ]
