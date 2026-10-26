@@ -12,6 +12,7 @@ from dynamite_sampler.kvs import (
     KvsClient,
     KvsDeviceError,
     KvsError,
+    Kvs,
     KvsRejected,
     KvsTimeout,
 )
@@ -23,6 +24,8 @@ class FakeBleakClient:
     def __init__(self, responder=None):
         self.writes = []
         self.kvs = None
+        self.is_connected = True
+        self.stop_calls = 0
         # responder(kvs, request_bytes) -> reply frame bytes, or None to
         # answer with nothing (a dead link; the firmware answers every
         # request — busy ones get 'B').
@@ -35,6 +38,9 @@ class FakeBleakClient:
         if reply is not None:
             self.kvs._on_notify(None, bytearray(reply))
 
+    async def stop_notify(self, _uuid):
+        self.stop_calls += 1
+
 
 def make_client(responder=None):
     client = KvsClient(FakeBleakClient(responder), "fake")
@@ -42,19 +48,21 @@ def make_client(responder=None):
     return client
 
 
+def make_kvs(responder=None):
+    kvs = Kvs(FakeBleakClient(responder), "fake")
+    kvs._client.client.kvs = kvs._client
+    return kvs
+
+
 @pytest.fixture
 def short_timeout(monkeypatch):
     monkeypatch.setattr(kvs_module, "_COMMAND_TIMEOUT_S", 0.05)
 
 
-def test_timeout_raises_kvs_timeout(short_timeout):
+async def test_timeout_raises_kvs_timeout(short_timeout):
     kvs = make_client(responder=lambda kvs, req: None)
-
-    async def run():
-        with pytest.raises(KvsTimeout):
-            await kvs.get("F", "exc")
-
-    asyncio.run(run())
+    with pytest.raises(KvsTimeout):
+        await kvs.get("F", "exc")
 
 
 def test_kvs_timeout_is_catchable_as_kvs_error_and_timeout_error():
@@ -62,86 +70,62 @@ def test_kvs_timeout_is_catchable_as_kvs_error_and_timeout_error():
     assert issubclass(KvsTimeout, TimeoutError)
 
 
-def test_rejection_raises_kvs_rejected():
+async def test_rejection_raises_kvs_rejected():
     kvs = make_client(responder=lambda kvs, req: b"0" + req)
-
-    async def run():
-        with pytest.raises(KvsRejected):
-            await kvs.get("F", "nope")
-
-    asyncio.run(run())
+    with pytest.raises(KvsRejected):
+        await kvs.get("F", "nope")
 
 
-def test_busy_raises_kvs_busy():
+async def test_busy_raises_kvs_busy():
     """The device lock's answer while the ADC feed streams."""
     kvs = make_client(responder=lambda kvs, req: b"B" + req)
-
-    async def run():
-        with pytest.raises(KvsBusy):
-            await kvs.set("U", "lc0.cap", "200")
-
-    asyncio.run(run())
+    with pytest.raises(KvsBusy):
+        await kvs.set("U", "lc0.cap", "200")
 
 
-def test_device_error_raises_kvs_device_error():
+async def test_device_error_raises_kvs_device_error():
     kvs = make_client(responder=lambda kvs, req: b"E" + req)
-
-    async def run():
-        with pytest.raises(KvsDeviceError):
-            await kvs.get("F", "ch0.raw")
-
-    asyncio.run(run())
+    with pytest.raises(KvsDeviceError):
+        await kvs.get("F", "ch0.raw")
 
 
-def test_error_mid_iteration_does_not_pass_as_end_of_keys():
+async def test_error_mid_iteration_does_not_pass_as_end_of_keys():
     """'E' from IDX is a storage failure, not end-of-iteration — a
     truncated listing must not pass as complete."""
     answers = iter([b"1IDXF0=ch0.raw=21", b"EIDXF1"])
     kvs = make_client(responder=lambda kvs, req: next(answers))
-
-    async def run():
-        with pytest.raises(KvsDeviceError):
-            await kvs.list_entries("F")
-
-    asyncio.run(run())
+    with pytest.raises(KvsDeviceError):
+        await kvs.list_entries("F")
 
 
-def test_unknown_status_byte_fails_loudly():
+async def test_unknown_status_byte_fails_loudly():
     """A status byte this client doesn't know is a protocol break: raise
     immediately instead of riding out the timeout."""
     kvs = make_client(responder=lambda kvs, req: b"Z" + req)
-
-    async def run():
-        with pytest.raises(KvsError, match="status byte"):
-            await kvs.get("F", "exc")
-
-    asyncio.run(run())
+    with pytest.raises(KvsError, match="status byte"):
+        await kvs.get("F", "exc")
 
 
-def test_get_returns_payload_after_echo_and_separator():
+async def test_get_returns_payload_after_echo_and_separator():
     kvs = make_client(responder=lambda kvs, req: b"1" + req + b"=4.53,nominal")
-    assert asyncio.run(kvs.get("F", "exc")) == "4.53,nominal"
+    assert await kvs.get("F", "exc") == "4.53,nominal"
 
 
-def test_stale_prefix_frame_is_not_attributed(short_timeout):
+async def test_stale_prefix_frame_is_not_attributed(short_timeout):
     """A's timed-out request is a strict extension of B's: A's late reply
     must not resolve B (the old prefix-match bug)."""
     stale = b"1GETFabcX=9"  # late reply to the timed-out GETFabcX
+    kvs = make_client(responder=lambda kvs, req: None)
+    with pytest.raises(KvsTimeout):
+        await kvs.get("F", "abcX")
 
-    async def run():
-        kvs = make_client(responder=lambda kvs, req: None)
-        with pytest.raises(KvsTimeout):
-            await kvs.get("F", "abcX")
+    def respond(kvs, req):
+        kvs._on_notify(None, bytearray(stale))  # arrives first
+        return b"1" + req + b"=5"
 
-        def respond(kvs, req):
-            kvs._on_notify(None, bytearray(stale))  # arrives first
-            return b"1" + req + b"=5"
-
-        kvs.client.responder = respond
-        # Would have failed with "Device rejected" under prefix matching.
-        assert await kvs.get("F", "abc") == "5"
-
-    asyncio.run(run())
+    kvs.client.responder = respond
+    # Would have failed with "Device rejected" under prefix matching.
+    assert await kvs.get("F", "abc") == "5"
 
 
 def test_frame_with_no_pending_command_is_dropped():
@@ -161,71 +145,118 @@ def test_duplicate_frame_does_not_double_complete():
     assert fut.result() == b"4.53"
 
 
-def test_commands_are_serialized_in_order():
+async def test_commands_are_serialized_in_order():
     in_flight = 0
     max_in_flight = 0
 
-    async def run():
+    async def slow_responder_write(_uuid, data, response=True):
         nonlocal in_flight, max_in_flight
+        request = bytes(data)
+        kvs.client.writes.append(request)
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        kvs._on_notify(None, bytearray(b"1" + request + b"="))
+        in_flight -= 1
 
-        async def slow_responder_write(_uuid, data, response=True):
-            nonlocal in_flight, max_in_flight
-            request = bytes(data)
-            kvs.client.writes.append(request)
-            in_flight += 1
-            max_in_flight = max(max_in_flight, in_flight)
-            await asyncio.sleep(0.01)
-            kvs._on_notify(None, bytearray(b"1" + request + b"="))
-            in_flight -= 1
-
-        kvs = make_client()
-        kvs.client.write_gatt_char = slow_responder_write
-        return await asyncio.gather(
-            kvs.get("F", "ch0.r"), kvs.get("F", "ch1.r"), kvs.get("U", "lc0.cap")
-        )
-
-    asyncio.run(run())
+    kvs = make_client()
+    kvs.client.write_gatt_char = slow_responder_write
+    await asyncio.gather(
+        kvs.get("F", "ch0.r"), kvs.get("F", "ch1.r"), kvs.get("U", "lc0.cap")
+    )
     assert max_in_flight == 1
 
 
-def test_late_reply_after_timeout_does_not_break_next_command(short_timeout):
+async def test_late_reply_after_timeout_does_not_break_next_command(short_timeout):
     """After A times out unanswered, A's late reply (arriving while B is
     outstanding, different request bytes) is dropped; B resolves with its
     own reply."""
+    kvs = make_client(responder=lambda kvs, req: None)
+    with pytest.raises(KvsTimeout):
+        await kvs.get("F", "exc")
 
-    async def run():
-        kvs = make_client(responder=lambda kvs, req: None)
-        with pytest.raises(KvsTimeout):
-            await kvs.get("F", "exc")
+    def respond(kvs, req):
+        # A's late frame arrives during B, then B's own reply.
+        kvs._on_notify(None, bytearray(b"1GETFexc=4.53"))
+        return b"1" + req + b"=200"
 
-        def respond(kvs, req):
-            # A's late frame arrives during B, then B's own reply.
-            kvs._on_notify(None, bytearray(b"1GETFexc=4.53"))
-            return b"1" + req + b"=200"
-
-        kvs.client.responder = respond
-        assert await kvs.get("U", "lc0.cap") == "200"
-
-    asyncio.run(run())
+    kvs.client.responder = respond
+    assert await kvs.get("U", "lc0.cap") == "200"
 
 
-def test_identical_request_late_reply_is_accepted(short_timeout):
+async def test_identical_request_late_reply_is_accepted(short_timeout):
     """A late reply to a byte-identical timed-out request is
     indistinguishable from the retried command's own reply (no transaction
     ID in the protocol). Accepting it is correct: KVS commands are
     idempotent, and the device did execute that exact command."""
+    kvs = make_client(responder=lambda kvs, req: None)
+    with pytest.raises(KvsTimeout):
+        await kvs.get("F", "exc")
 
-    async def run():
-        kvs = make_client(responder=lambda kvs, req: None)
-        with pytest.raises(KvsTimeout):
-            await kvs.get("F", "exc")
+    def respond(kvs, req):
+        # The timed-out GET's late reply arrives during the retry.
+        kvs._on_notify(None, bytearray(b"1GETFexc=stale"))
+        return b"1" + req + b"=4.53"
 
-        def respond(kvs, req):
-            # The timed-out GET's late reply arrives during the retry.
-            kvs._on_notify(None, bytearray(b"1GETFexc=stale"))
-            return b"1" + req + b"=4.53"
+    kvs.client.responder = respond
+    assert await kvs.get("F", "exc") == "stale"
 
-        kvs.client.responder = respond
-        assert await kvs.get("F", "exc") == "stale"
 
-    asyncio.run(run())
+async def test_close_fails_pending_before_unsubscribe_finishes():
+    kvs = make_client(responder=lambda kvs, req: None)
+    stop_started = asyncio.Event()
+    finish_stop = asyncio.Event()
+
+    async def blocking_stop(_uuid):
+        kvs.client.stop_calls += 1
+        stop_started.set()
+        await finish_stop.wait()
+
+    kvs.client.stop_notify = blocking_stop
+    command = asyncio.create_task(kvs.get("F", "exc"))
+    await asyncio.sleep(0)
+    assert kvs._pending is not None
+
+    closing = asyncio.create_task(kvs.close())
+    await stop_started.wait()
+    await asyncio.sleep(0)
+    assert command.done()
+    with pytest.raises(KvsError, match="closed") as caught:
+        await command
+    assert type(caught.value) is KvsError
+    assert not closing.done()
+
+    finish_stop.set()
+    await closing
+    assert kvs.client.stop_calls == 1
+
+
+async def test_close_fails_queued_command_without_another_ble_write():
+    kvs = make_client(responder=lambda kvs, req: None)
+    pending = asyncio.create_task(kvs.get("F", "ch0.r"))
+    queued = asyncio.create_task(kvs.get("F", "ch1.r"))
+    await asyncio.sleep(0)
+    assert kvs._pending is not None
+
+    await kvs.close()
+    errors = await asyncio.gather(pending, queued, return_exceptions=True)
+    assert [type(error) for error in errors] == [KvsError, KvsError]
+    assert all("closed" in str(error) for error in errors)
+    assert kvs.client.writes == [b"GETFch0.r"]
+
+
+async def test_commands_after_close_fail_before_ble_write():
+    kvs = make_kvs()
+    await kvs.close()
+    with pytest.raises(KvsError, match="closed") as caught:
+        await kvs._client.get("F", "exc")
+    assert type(caught.value) is KvsError
+    assert kvs._client.client.writes == []
+    assert kvs._client.client.stop_calls == 1
+
+
+async def test_close_skips_unsubscribe_when_disconnected():
+    kvs = make_client()
+    kvs.client.is_connected = False
+    await kvs.close()
+    assert kvs.client.stop_calls == 0

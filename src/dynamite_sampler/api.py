@@ -175,6 +175,11 @@ class DynamiteSampler(BLEService):
 
             return ADCConfigData((reg_id >> 8) & 0xF, power_mode, rate, gains)
 
+    class KVS(BLECharacteristic):
+        """Key-value store command/response characteristic."""
+
+        UUID = "10adce11-68a6-450b-9810-ca11b39fd283"
+
 
 class OTA(BLEService):
     # TODO - implement this and convert the OTA script to use this API
