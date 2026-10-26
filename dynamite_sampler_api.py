@@ -97,7 +97,7 @@ class DynamiteSampler(BLEService):
         concatenated 12-byte ADC samples (4 channels x 3 bytes each, signed little-endian).
         """
 
-        UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+        UUID = "6e08f21a-c056-43ed-890a-d72bb0f7c12f"
 
         _header_bytes: ClassVar[int] = 2  # ssn (2B)
         _sample_bytes: ClassVar[int] = 12  # 4 channels x 3 bytes each
@@ -189,10 +189,10 @@ class DynamiteSampler(BLEService):
 
 class OTA(BLEService):
     # TODO - implement this and convert the OTA script to use this API
-    UUID = "d6f1d96d-594c-4c53-b1c6-144a1dfde6d8"
+    UUID = "6f2ecf77-fd83-42a8-86de-4be9713bd53c"
 
     class Control:
-        UUID = "7ad671aa-21c0-46a4-b722-270e3ae3d830"
+        UUID = "66815c6b-2b3f-4142-8a0a-bc34644eae01"
 
         NOP = bytearray.fromhex("00")
 
@@ -205,7 +205,7 @@ class OTA(BLEService):
         DONE_NAK = bytearray.fromhex("06")
 
     class Data:
-        UUID = "23408888-1f40-4cd8-9b89-ca8d45f8a5b0"
+        UUID = "09999d81-f1f6-4e31-8946-590220cc99af"
 
 
 class TxPower(BLEService):
@@ -231,6 +231,24 @@ class DeviceInfo(BLEService):
         @staticmethod
         def unpack(b: bytearray | bytes) -> str:
             return str(b, "utf-8")
+
+    class ModelNumber(BLECharacteristicRead[str]):
+        """Marketing name, from the flashed board identity."""
+
+        UUID = "2A24"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")
+
+    class SerialNumber(BLECharacteristicRead[str]):
+        """Serial number string (the eFuse MAC hex)."""
+
+        UUID = "2A25"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")
 
     class FirmwareRevision(BLECharacteristicRead[str]):
         UUID = "2A26"
