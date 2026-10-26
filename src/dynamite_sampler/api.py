@@ -4,16 +4,15 @@ The classes represent the different services the board exposes.
 TODO: figure out how to abstract this file into separate repo.
 """
 
-import struct
-from typing import Generic, TypeVar, ClassVar
 import dataclasses
+from typing import ClassVar, Generic, TypeVar
 
-
-import ADS131M04Register
+from . import ADS131M04Register
 
 
 # Moved outside of the service characteristic classes to make it less nested.
-# Unclear if thats the best way, TODO: decide where to put these. TODO: is dataclass a good idea?
+# Unclear if thats the best way, TODO: decide where to put these.
+# TODO: is dataclass a good idea?
 @dataclasses.dataclass
 class ADCConfigData:
     num_channels: int
@@ -76,7 +75,8 @@ class BLECharacteristicWrite(BLECharacteristic, Generic[_PackType]):
     @classmethod
     def pack(data: _PackType) -> bytes | bytearray:
         """Pack data into bytes to send."""
-        # The return type ideally would be collections.abc.Buffer, but that is new to 3.12.
+        # The return type ideally would be collections.abc.Buffer,
+        # but that is new to 3.12.
         # bytes | bytearray should be good enough for now.
         raise NotImplementedError("Subclasses must implement the pack method.")
 
@@ -94,7 +94,8 @@ class DynamiteSampler(BLEService):
         """Characteristic that streams the ADC values. Only has BLE Notifications.
 
         Each notification is a packet with a 2-byte header (see FeedHeader) followed by
-        concatenated 12-byte ADC samples (4 channels x 3 bytes each, signed little-endian).
+        concatenated 12-byte ADC samples (4 channels x 3 bytes each, signed
+        little-endian).
         """
 
         UUID = "6e08f21a-c056-43ed-890a-d72bb0f7c12f"

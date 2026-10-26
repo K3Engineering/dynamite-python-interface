@@ -3,20 +3,19 @@
 
 import argparse
 import asyncio
-import datetime
 import collections
-import time
 import csv
+import datetime
 import inspect
-import socket
+import itertools
 import json
 import pathlib
-import itertools
-
+import socket
+import time
 from typing import Optional
 
-import dynamite_sampler_api as ds
-import dynamite_sampler_bleak_util as dsbu
+from dynamite_sampler import api as ds
+from dynamite_sampler import bleak_util as dsbu
 
 # TODO add pretty class prints
 
@@ -45,7 +44,9 @@ class FeedDataCSVWriter(dsbu.NotifyCallbackFeeddatas):
         print("#", "CSV setup:", datetime.datetime.now(), file=self.csv_file)
         print("#", device_dict, file=self.csv_file)
 
-        # fieldnames_feedheader = inspect.getfullargspec(ds.FeedHeader.__init__).args[1:]
+        # fieldnames_feedheader = inspect.getfullargspec(
+        #     ds.FeedHeader.__init__
+        # ).args[1:]
         fieldnames_feeddata = inspect.getfullargspec(ds.FeedData.__init__).args[1:]
         fieldnames = ["Sample Sequence Number"] + fieldnames_feeddata
 
@@ -97,7 +98,8 @@ class MetricsPrinter(dsbu.NotifyCallbackRawData):
         """
         n_sample_avg: how many sample raw sample metrics to average
         print_dt:   [Seconds] The minimum time between printing the delta.
-                    This makes the metrics more readable since it doesn't flicker as often.
+                    This makes the metrics more readable since it doesn't
+                    flicker as often.
         """
         self.queue_len = int(n_sample_avg)
         self.print_dt = float(print_dt)
@@ -208,7 +210,8 @@ class SocketStream(dsbu.NotifyCallbackFeeddatas):
 
             self.converstion_func = conversion_funcs[self.conversion_str]
 
-            # Send the scaling factor by which to divide the values to get the selected units.
+            # Send the scaling factor by which to divide the values to get
+            # the selected units.
             scale_factor = int(1 / self.converstion_func(1))
             print(
                 "Sending scale factor:", scale_factor, "to socket", server.getsockname()
