@@ -173,6 +173,11 @@ class DynamiteSampler(BLEService):
 
             return ADCConfigData((reg_id >> 8) & 0xF, power_mode, rate, gains)
 
+    class KVS(BLECharacteristic):
+        """Key-value store command/response characteristic."""
+
+        UUID = "10adce11-68a6-450b-9810-ca11b39fd283"
+
 
 class OTA(BLEService):
     # TODO - implement this and convert the OTA script to use this API
@@ -292,3 +297,6 @@ def voltage_to_weight(
     fullscale: Loadcell's rated fullscale output
     """
     return value * fullscale / (loadcell_ratio / 1000 * voltage_in)
+
+
+from . import kvs as kvs  # noqa: E402
