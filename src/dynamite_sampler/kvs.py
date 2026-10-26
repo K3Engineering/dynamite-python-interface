@@ -25,8 +25,8 @@ import re
 
 import bleak
 
-from .api import DynamiteSampler
 from .errors import KvsBusy, KvsDeviceError, KvsError, KvsRejected, KvsTimeout
+from .gatt import DynamiteSamplerService
 
 __all__ = [
     "KVS_CHR_UUID",
@@ -39,17 +39,12 @@ __all__ = [
     "MAX_VAL_LEN",
     "KVS_WRITE_DELAY_S",
     "KEY_DEVICE_NAME",
-    "KvsError",
-    "KvsRejected",
-    "KvsBusy",
-    "KvsDeviceError",
-    "KvsTimeout",
     "KvsClient",
     "Kvs",
     "KvsNamespace",
 ]
 
-KVS_CHR_UUID = DynamiteSampler.KVS.UUID
+KVS_CHR_UUID = DynamiteSamplerService.KVS.UUID
 
 FOLDER_FACTORY = "F"
 FOLDER_USER = "U"

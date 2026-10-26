@@ -8,8 +8,8 @@ import asyncio
 import pytest
 
 import dynamite_sampler as dms
-from dynamite_sampler.api import OTA
 from dynamite_sampler.errors import ConnectionLost, OtaError, OtaRejected, OtaTimeout
+from dynamite_sampler.gatt import OTA
 from dynamite_sampler.ota import Ota
 
 IMAGE = bytes(range(256)) * 3

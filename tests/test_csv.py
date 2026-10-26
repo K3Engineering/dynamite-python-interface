@@ -6,7 +6,6 @@ metadata line."""
 import json
 import math
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -20,6 +19,7 @@ from dynamite_sampler.csv_io import (
     _yaml_lines,
     read_csv,
 )
+from dynamite_sampler.device import DeviceInfo
 from dynamite_sampler.errors import (
     CsvFormatError,
     DynamiteError,
@@ -300,14 +300,14 @@ class _FakeDev:
     """The recorder's device surface, no BLE."""
 
     def __init__(self, gains, snapshot, tare_raw=None):
-        self.info = SimpleNamespace(
-            address="AA:BB:CC:DD:EE:FF",
-            name="DS AABBCCDDEEFF",
-            board_model="v700P",
-            firmware="v700P|v1.0.0",
-            manufacturer="K3 Engineering",
-            model_number="Dynamite Sampler Pro Mk1",
-            serial="AABBCCDDEEFF",
+        self.info = DeviceInfo(
+            "AA:BB:CC:DD:EE:FF",
+            "DS AABBCCDDEEFF",
+            "v700P",
+            "v700P|v1.0.0",
+            "K3 Engineering",
+            "Dynamite Sampler Pro Mk1",
+            "AABBCCDDEEFF",
         )
         self.sample_rate = 1000
         self.gains = gains

@@ -23,12 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 import dynamite_sampler as dms  # noqa: E402
 from dynamite_sampler import discovery  # noqa: E402
-from dynamite_sampler.api import DeviceInformation  # noqa: E402
 from dynamite_sampler.errors import (  # noqa: E402
     ConnectionLost,
     DeviceNotFound,
     FirmwareCatalogError,
 )
+from dynamite_sampler.gatt import DeviceInformation  # noqa: E402
 from dynamite_sampler.ota import Ota  # noqa: E402
 from releases import (  # noqa: E402
     FirmwareChannel,
