@@ -7,6 +7,8 @@ TODO: figure out how to abstract this file into separate repo.
 import dataclasses
 from typing import ClassVar, Generic, TypeVar
 
+from .errors import ProtocolError
+
 
 # Moved outside of the service characteristic classes to make it less nested.
 # Unclear if thats the best way, TODO: decide where to put these.
@@ -98,8 +100,26 @@ class DynamiteSamplerService(BLEService):
 
         UUID = "6e08f21a-c056-43ed-890a-d72bb0f7c12f"
 
-        _header_bytes: ClassVar[int] = 2  # ssn (2B)
-        _sample_bytes: ClassVar[int] = 12  # 4 channels x 3 bytes each
+        HEADER_BYTES: ClassVar[int] = 2
+        SAMPLE_BYTES: ClassVar[int] = 12
+        _header_bytes: ClassVar[int] = HEADER_BYTES
+        _sample_bytes: ClassVar[int] = SAMPLE_BYTES
+
+        @classmethod
+        def split(cls, b: bytearray | bytes) -> tuple[int, bytes]:
+            """Return the sequence number and a whole number of samples."""
+            if len(b) < cls.HEADER_BYTES:
+                raise ProtocolError(
+                    f"ADC feed frame shorter than its header: {len(b)} B"
+                )
+            payload = bytes(b[cls.HEADER_BYTES :])
+            if len(payload) % cls.SAMPLE_BYTES != 0:
+                raise ProtocolError(
+                    f"ADC feed payload {len(payload)} B is not a whole number of "
+                    f"{cls.SAMPLE_BYTES} B samples"
+                )
+            ssn = int.from_bytes(b[: cls.HEADER_BYTES], "little")
+            return ssn, payload
 
         @staticmethod
         def _unpack_header(b: bytearray | bytes) -> FeedHeader:
@@ -159,9 +179,10 @@ class DynamiteSamplerService(BLEService):
         @staticmethod
         def unpack(b: bytearray | bytes) -> ADCConfigData:
             if len(b) < 11:
-                raise ValueError(f"ADC config frame too short: {len(b)} B")
+                raise ProtocolError(f"ADC config frame too short: {len(b)} B")
             version = b[0]
-            assert version == 1, "Can't parse this version"
+            if version != 1:
+                raise ProtocolError(f"Unsupported ADC config version: {version}")
 
             reg_id = int.from_bytes(b[1:3], "little")
             reg_clock = int.from_bytes(b[7:9], "little")
@@ -216,7 +237,8 @@ class TxPowerLevel(BLEService):
 
         @staticmethod
         def unpack(b: bytearray | bytes) -> int:
-            assert len(b) == 1, "TX power expected to be single int8 byte"
+            if len(b) != 1:
+                raise ProtocolError("TX power must be a single int8 byte")
             return int.from_bytes(b, signed=True)
 
 

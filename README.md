@@ -7,6 +7,36 @@ Python interface for the Dynamite sampler board.
 A Bleak implementation that uses the `bleak` library to connect to the dynamite sampler,
 and streams that data to call back classes.
 
+## Asynchronous device acquisition
+
+`aconnect()` connects to the only device in range, or to a supplied address.
+The device streams raw `Packet` values and reads fixed-size windows as
+self-describing `Recording` values:
+
+```python
+import asyncio
+import dynamite_sampler as dms
+
+async def acquire():
+    async with dms.aconnect() as dev:
+        calibration = await dev.read_calibration()
+        tare = await dev.tare()
+        recording = await dev.read(
+            seconds=10,
+            units="kgf",
+            calibration=calibration,
+            tare_raw=tare,
+        )
+    recording.to_csv("run.csv")
+
+asyncio.run(acquire())
+```
+
+Calibration and tare are explicit values rather than cached measurement
+state. `dev.stream()` yields raw counts; `dev.read()` lays dropped samples
+into the returned timeline as NaN rows. `dms.read_csv(path)` reads recordings
+without a device.
+
 ## Script to stream data to various sources `stream.py`
 
 This script implements various streaming sinks:
