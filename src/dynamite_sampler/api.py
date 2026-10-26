@@ -7,8 +7,6 @@ TODO: figure out how to abstract this file into separate repo.
 import dataclasses
 from typing import ClassVar, Generic, TypeVar
 
-from . import ADS131M04Register
-
 
 # Moved outside of the service characteristic classes to make it less nested.
 # Unclear if thats the best way, TODO: decide where to put these.
@@ -150,6 +148,10 @@ class DynamiteSampler(BLEService):
             mode:    uint16  [5:7]
             clock:   uint16  [7:9]
             pga:     uint16  [9:11]
+
+        Only four ADS131M04 register fields are used (datasheet bit
+        ranges): id.CHANCNT [11:8]; clock.PWR [1:0] and clock.OSR [4:2];
+        pga.PGAGAIN of channel i at bits [4i+2:4i].
         """
 
         UUID = "adcc0f19-2575-4502-9a48-0e99974eb34f"
@@ -159,33 +161,17 @@ class DynamiteSampler(BLEService):
             version = b[0]
             assert version == 1, "Can't parse this version"
 
-            reg_id = ADS131M04Register.ID.from_buffer(bytearray(b[1:3]))
-            reg_status = ADS131M04Register.Status.from_buffer(bytearray(b[3:5]))
-            reg_mode = ADS131M04Register.Mode.from_buffer(bytearray(b[5:7]))
-            reg_clock = ADS131M04Register.Clock.from_buffer(bytearray(b[7:9]))
-            reg_gain = ADS131M04Register.Gain.from_buffer(bytearray(b[9:11]))
+            reg_id = int.from_bytes(b[1:3], "little")
+            reg_clock = int.from_bytes(b[7:9], "little")
+            reg_gain = int.from_bytes(b[9:11], "little")
 
-            # TODO: not all of the registers are exposed, so for now print all of them
-            # for debug purposes.
-            print(reg_id)
-            print(reg_status)
-            print(reg_mode)
-            print(reg_clock)
-            print(reg_gain)
-
-            num_ch = reg_id.CHANCNT
-
-            pow_mode_dict = {0: "VERY_LOW_POWER", 1: "LOW_POWER", 2: "HIGH_RESOLUTION"}
-            pow_mode = pow_mode_dict[reg_clock.PWR]
-            rate = 32000 // 2**reg_clock.OSR
-            gains = [
-                2**reg_gain.PGAGAIN0,
-                2**reg_gain.PGAGAIN1,
-                2**reg_gain.PGAGAIN2,
-                2**reg_gain.PGAGAIN3,
+            power_mode = {0: "VERY_LOW_POWER", 1: "LOW_POWER", 2: "HIGH_RESOLUTION"}[
+                reg_clock & 0b11
             ]
+            rate = 32000 // 2 ** ((reg_clock >> 2) & 0b111)
+            gains = [2 ** ((reg_gain >> (4 * i)) & 0b111) for i in range(4)]
 
-            return ADCConfigData(num_ch, pow_mode, rate, gains)
+            return ADCConfigData((reg_id >> 8) & 0xF, power_mode, rate, gains)
 
 
 class OTA(BLEService):
