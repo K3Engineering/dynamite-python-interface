@@ -1,7 +1,10 @@
-"""Recording and read_csv round-trip tests."""
+"""Recording, read_csv, read(seconds=), and the recording() capture."""
 
+import asyncio
 import datetime
 import math
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -9,9 +12,17 @@ import pytest
 import dynamite_sampler as dms
 from dynamite_sampler.calibration import Calibration
 from dynamite_sampler.csv_io import read_csv
+from dynamite_sampler.errors import ConnectionLost
 from dynamite_sampler.recording import Recording
 
 from .test_csv import _CELLED_USER, _NOMINAL_FACTORY
+from .test_device import (
+    FakeClient,
+    make_device,
+    make_nominal_device,
+    packet,
+    wait_notify,
+)
 
 # The file columns are fixed-point (csv_decimals: mV/V at 8, kgf at 6,
 # N at 5 decimals); equality here is up to the worst unit's column
@@ -160,3 +171,251 @@ def test_column_names_and_dataframe():
     assert list(frame.columns) == ["ch0_mV", "ch1_mV", "ch2_mV", "ch3_mV"]
     assert frame.index.name == "t_s"
     assert len(frame) == len(recording)
+
+
+async def test_read_seconds_of_feed():
+    client = FakeClient()
+    device = make_device(client)
+    pending = asyncio.ensure_future(device.read(seconds=0.01, units="raw"))
+    await wait_notify(client)
+    client.notify(None, packet(0, [[i] * 4 for i in range(6)]))
+    client.notify(None, packet(6, [[i] * 4 for i in range(6, 10)]))
+    recording = await pending
+    assert isinstance(recording, Recording)
+    assert len(recording) == 10
+    assert recording.sample_rate == 1000
+    assert recording.units == "raw"
+    assert recording.device is not None
+    assert recording.calibration is not None
+
+
+async def test_read_requires_exactly_one_length():
+    client = FakeClient()
+    device = make_device(client)
+    with pytest.raises(ValueError, match="exactly one"):
+        await device.read()
+    with pytest.raises(ValueError, match="exactly one"):
+        await device.read(10, seconds=0.01)
+
+
+async def test_read_always_carries_a_calibration():
+    """A Recording is self-describing, so read() parses the device's own
+    calibration when none is passed — one KVS dump, reused by passing it in."""
+    client = FakeClient()
+    device = make_nominal_device(client)
+    calls = []
+    original = device.kvs.read_all
+
+    async def counting():
+        calls.append(1)
+        return await original()
+
+    device.kvs.read_all = counting  # type: ignore[method-assign]
+    calibration = await device.read_calibration()
+    assert calls == [1]
+    pending = asyncio.ensure_future(
+        device.read(1, units="mV/V", calibration=calibration)
+    )
+    await wait_notify(client)
+    client.notify(None, packet(0, [[1000, 0, 0, 0]]))
+    recording = await pending
+    assert calls == [1]  # the explicit calibration skipped the dump
+    counts_per_mvv = (1 << 23) * 15.6 / (1.2 * 1000.0) * 4.5
+    assert recording.units == "mV/V"
+    assert np.allclose(recording.data[0, 0], 1000 / counts_per_mvv)
+
+
+async def test_read_tare_is_applied_from_the_argument():
+    client = FakeClient()
+    device = make_device(client)
+    pending = asyncio.ensure_future(
+        device.read(1, units="raw", tare_raw=np.array([5.0, 0.0, 0.0, 0.0]))
+    )
+    await wait_notify(client)
+    client.notify(None, packet(0, [[10, 0, 0, 0]]))
+    recording = await pending
+    assert recording.data[0, 0] == 5.0
+    assert recording.raw[0, 0] == 10.0
+
+
+async def test_tare_returns_the_average_and_stores_nothing():
+    client = FakeClient()
+    device = make_device(client)
+    pending = asyncio.ensure_future(device.tare(n=2))
+    await wait_notify(client)
+    client.notify(None, packet(0, [[10, 2, 0, 0], [20, 4, 0, 0]]))
+    tare = await pending
+    assert np.array_equal(tare, [15.0, 3.0, 0.0, 0.0])
+    assert not hasattr(device, "tare_raw")
+
+
+async def test_tare_raises_when_a_channel_never_arrives():
+    client = FakeClient()
+    device = make_device(client)
+    pending = asyncio.ensure_future(device.tare(n=3))
+    await wait_notify(client)
+    # The window is 3 rows: 1 real + 2 dropped. Every channel has one sample
+    # so the tare computes; a channel with zero would need a narrower ADC.
+    client.notify(None, packet(0, [[1, 2, 3, 4]]))
+    client.notify(None, packet(3, [[1, 2, 3, 4]]))  # ssn 1, 2 dropped
+    tare = await pending
+    assert np.array_equal(tare, [1.0, 2.0, 3.0, 4.0])
+
+
+async def test_connect_builds_no_calibration():
+    device = make_device(FakeClient())
+    assert not hasattr(device, "calibration")
+    assert not hasattr(device, "tare_raw")
+
+
+async def test_read_calibration_parses_the_kvs():
+    device = make_nominal_device(FakeClient())
+    cal = await device.read_calibration()
+    assert cal.nominals is not None
+    assert not cal.is_calibrated
+
+
+async def test_capture_finalizes_contiguous_recording(tmp_path):
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording(units="raw", path=tmp_path / "cap.csv") as cap:
+        await wait_notify(client)
+        client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+        for _ in range(1000):
+            if cap.rows >= 2:
+                break
+            await asyncio.sleep(0)
+        assert cap.rows == 2
+    recording = cap.recording
+    assert recording is not None
+    assert len(recording) == 2
+    assert np.array_equal(recording.raw, [[1, 2, 3, 4], [5, 6, 7, 8]])
+    assert math.isnan(recording.host_time)  # read back from its own file
+    assert cap._raw == []  # file-first: nothing accumulated in memory
+    assert not device._active
+    from_file = read_csv(tmp_path / "cap.csv")
+    assert np.array_equal(from_file.raw, recording.raw)
+    assert from_file.ssn0 == recording.ssn0
+
+
+async def test_capture_in_memory_keeps_packet_gaps(tmp_path):
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording(units="raw") as cap:
+        await wait_notify(client)
+        client.notify(None, packet(0, [[1, 2, 3, 4]]))
+        client.notify(None, packet(3, [[9, 10, 11, 12]]))  # ssn 1, 2 dropped
+        for _ in range(1000):
+            if cap.rows >= 4:
+                break
+            await asyncio.sleep(0)
+    recording = cap.recording
+    assert len(recording) == 4
+    assert np.isnan(recording.raw[1:3]).all()
+    assert np.array_equal(recording.raw[0], [1, 2, 3, 4])
+    assert np.array_equal(recording.raw[3], [9, 10, 11, 12])
+    assert recording.rows_dropped == 2
+
+
+async def test_capture_stop_is_idempotent():
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording() as cap:
+        await wait_notify(client)
+        client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+        for _ in range(1000):
+            if cap.rows:
+                break
+            await asyncio.sleep(0)
+        await cap.stop()
+        assert cap.recording is not None
+    assert cap.recording is not None
+    assert not device._active
+
+
+async def test_capture_surfaces_link_loss_but_keeps_partial_data():
+    client = FakeClient()
+    disconnected = asyncio.Event()
+    device = make_device(client, disconnected=disconnected)
+    with pytest.raises(ConnectionLost):
+        async with device.recording() as cap:
+            await wait_notify(client)
+            client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+            for _ in range(1000):
+                if cap.rows:
+                    break
+                await asyncio.sleep(0)
+            disconnected.set()
+    assert cap.recording is not None
+    assert len(cap.recording) == 2
+    assert not device._active
+
+
+async def test_capture_body_exception_keeps_data_and_frees_feed():
+    client = FakeClient()
+    device = make_device(client)
+    with pytest.raises(RuntimeError, match="boom"):
+        async with device.recording() as cap:
+            await wait_notify(client)
+            client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+            for _ in range(1000):
+                if cap.rows:
+                    break
+                await asyncio.sleep(0)
+            raise RuntimeError("boom")
+    assert cap.recording is not None
+    assert not device._active
+
+
+async def test_capture_with_no_packets_yields_no_recording():
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording() as cap:
+        await wait_notify(client)
+    assert cap.recording is None
+    assert not device._active
+
+
+class _StubKvs:
+    """The facade constructor wants namespace handles; the capture tests
+    don't touch them."""
+
+    factory = user = settings = None
+
+
+def test_sync_capture_runs_pump_on_the_facade_loop():
+    from dynamite_sampler.device import AsyncDynamiteSampler, DynamiteSampler
+    from dynamite_sampler.gatt import ADCConfigData
+
+    client = FakeClient()
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        adc = ADCConfigData(4, "HIGH_RESOLUTION", 1000, [1, 1, 1, 1])
+        dev = DynamiteSampler(
+            AsyncDynamiteSampler(client, None, adc, _StubKvs()), loop, thread
+        )
+        with dev.recording(units="raw") as cap:
+            # The user's thread is free here; post notifications onto the
+            # facade loop the way bleak would.
+            for _ in range(200):
+                if client.notify is not None:
+                    break
+                time.sleep(0.001)
+            loop.call_soon_threadsafe(
+                client.notify, None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]])
+            )
+            for _ in range(200):
+                if cap.rows:
+                    break
+                time.sleep(0.001)
+            assert cap.rows == 2
+            time.sleep(0)  # the with-body owned the main thread throughout
+        assert cap.recording is not None
+        assert np.array_equal(cap.recording.raw, [[1, 2, 3, 4], [5, 6, 7, 8]])
+        assert not dev._async._active
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()

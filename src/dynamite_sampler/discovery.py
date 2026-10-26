@@ -21,7 +21,7 @@ class FoundDevice:
 
 async def discover(timeout: float = DEFAULT_DISCOVER_TIMEOUT_S) -> list[FoundDevice]:
     """All Dynamite Samplers in range, sorted by RSSI descending."""
-    from .api import DynamiteSamplerService
+    from .gatt import DynamiteSamplerService
 
     devices_and_adv = await bleak.BleakScanner.discover(
         timeout=timeout,
@@ -38,7 +38,7 @@ async def discover(timeout: float = DEFAULT_DISCOVER_TIMEOUT_S) -> list[FoundDev
 
 async def _find_by_address(address: str) -> FoundDevice | None:
     """Scan until ``address`` advertises, then stop (not the full timeout)."""
-    from .api import DynamiteSamplerService
+    from .gatt import DynamiteSamplerService
 
     wanted = address.upper()
     found: list[FoundDevice] = []

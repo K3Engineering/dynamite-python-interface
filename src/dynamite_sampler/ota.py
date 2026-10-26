@@ -28,8 +28,8 @@ import collections.abc
 
 import bleak
 
-from .api import OTA
 from .errors import OtaError, OtaRejected, OtaTimeout
+from .gatt import OTA
 
 __all__ = [
     "Ota",
