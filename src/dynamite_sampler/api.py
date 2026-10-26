@@ -82,7 +82,7 @@ class BLECharacteristicWrite(BLECharacteristic, Generic[_PackType]):
 ## Dynamite Sampler API classes
 
 
-class DynamiteSampler(BLEService):
+class DynamiteSamplerService(BLEService):
     """Service that sends the ADC values (the force measurements).
     This service's UUID is advertised, and can be used to filter scanning."""
 
@@ -179,6 +179,9 @@ class DynamiteSampler(BLEService):
         UUID = "10adce11-68a6-450b-9810-ca11b39fd283"
 
 
+DynamiteSampler = DynamiteSamplerService
+
+
 class OTA(BLEService):
     # TODO - implement this and convert the OTA script to use this API
     UUID = "6f2ecf77-fd83-42a8-86de-4be9713bd53c"
@@ -212,7 +215,7 @@ class TxPower(BLEService):
             return power.to_bytes(signed=True, length=1)
 
 
-class DeviceInfo(BLEService):
+class DeviceInformation(BLEService):
     """Read-only device info. The UUIDs are 16 bit hex."""
 
     UUID = "180A"
@@ -265,6 +268,9 @@ class DeviceInfo(BLEService):
         def unpack(b: bytearray | bytes) -> int:
             assert len(b) == 1, "TX power expected to be single int8 byte"
             return int.from_bytes(b, signed=True)
+
+
+DeviceInfo = DeviceInformation
 
 
 ## ADC conversion utility functions
