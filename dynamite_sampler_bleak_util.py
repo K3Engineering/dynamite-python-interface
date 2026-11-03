@@ -176,7 +176,7 @@ class FeedSession:
         dev_info_cls = (
             ds.DeviceInfo.FirmwareRevision,
             ds.DeviceInfo.ManufacturerName,
-            ds.DeviceInfo.TxPowerLevel,
+            ds.TxPowerLevel.Level,
             ds.DynamiteSampler.ADCConfig,
         )
         self._device_info = {
