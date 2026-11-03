@@ -208,7 +208,24 @@ class OTA(BLEService):
         UUID = "09999d81-f1f6-4e31-8946-590220cc99af"
 
 
+class TxPowerLevel(BLEService):
+    """Standard Bluetooth SIG TX Power service: reading the current power.
+    Setting it is the custom [TxPower] service."""
+
+    UUID = "1804"
+
+    class Level(BLECharacteristicRead[int]):
+        UUID = "2A07"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> int:
+            assert len(b) == 1, "TX power expected to be single int8 byte"
+            return int.from_bytes(b, signed=True)
+
+
 class TxPower(BLEService):
+    """Setting only. Reading the current power is [TxPowerLevel]."""
+
     UUID = "74788a4c-72aa-4180-a478-59e969b959c9"
 
     class TxPowerSet(BLECharacteristicWrite[int]):
@@ -265,14 +282,6 @@ class DeviceInfo(BLEService):
         @staticmethod
         def unpack(b: bytearray | bytes) -> str:
             return bytes(b).rstrip(b"\x00").decode("utf-8")
-
-    class TxPowerLevel(BLECharacteristicRead[int]):
-        UUID = "2A07"
-
-        @staticmethod
-        def unpack(b: bytearray | bytes) -> int:
-            assert len(b) == 1, "TX power expected to be single int8 byte"
-            return int.from_bytes(b, signed=True)
 
 
 ## ADC conversion utility functions
