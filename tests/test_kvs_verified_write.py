@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from dynamite_sampler_kvs import (
+from dynamite_sampler.kvs import (
     KvsBusy,
     KvsClient,
     KvsDeviceError,

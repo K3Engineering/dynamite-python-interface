@@ -2,7 +2,7 @@
 
 import unittest
 
-from dynamite_sampler_kvs import MAX_KEY_LEN, MAX_VAL_LEN, KvsClient
+from dynamite_sampler.kvs import MAX_KEY_LEN, MAX_VAL_LEN, KvsClient
 
 
 class CheckKeyValTest(unittest.TestCase):

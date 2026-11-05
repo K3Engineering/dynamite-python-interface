@@ -27,7 +27,7 @@ import re
 
 import bleak
 
-from dynamite_sampler_bleak_util import find_dynamite_samplers
+from .bleak_util import find_dynamite_samplers
 
 __all__ = [
     "KVS_CHR_UUID",
