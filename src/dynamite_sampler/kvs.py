@@ -26,7 +26,7 @@ from collections.abc import Set as AbstractSet
 
 import bleak
 
-from .api import DynamiteSampler
+from .api import DynamiteSamplerService
 from .errors import KvsBusy, KvsDeviceError, KvsError, KvsRejected, KvsTimeout
 
 __all__ = [
@@ -45,7 +45,7 @@ __all__ = [
     "KvsNamespace",
 ]
 
-KVS_CHR_UUID = DynamiteSampler.KVS.UUID
+KVS_CHR_UUID = DynamiteSamplerService.KVS.UUID
 
 FOLDER_FACTORY = "F"
 FOLDER_USER = "U"
