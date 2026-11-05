@@ -3,6 +3,8 @@
 import asyncio
 import datetime
 import math
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -198,7 +200,7 @@ async def test_read_requires_exactly_one_length():
 
 async def test_read_always_carries_a_calibration():
     """A Recording is self-describing, so read() parses the device's own
-    calibration when none is passed â€” one KVS dump, reused by passing it in."""
+    calibration when none is passed — one KVS dump, reused by passing it in."""
     client = FakeClient()
     device = make_nominal_device(client)
     calls = []
@@ -423,3 +425,48 @@ async def test_cancelling_capture_stop_does_not_orphan_finalization():
     assert cap.recording is not None
     assert len(cap.recording) == 1
     assert not device._active
+
+
+class _StubKvs:
+    """The facade constructor wants namespace handles; the capture tests
+    don't touch them."""
+
+    factory = user = settings = None
+
+
+def test_sync_capture_runs_pump_on_the_facade_loop():
+    from dynamite_sampler.device import AsyncDynamiteSampler, DynamiteSampler
+    from dynamite_sampler.api import ADCConfigData
+
+    client = FakeClient()
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        adc = ADCConfigData(4, "HIGH_RESOLUTION", 1000, [1, 1, 1, 1])
+        dev = DynamiteSampler(
+            AsyncDynamiteSampler(client, None, adc, _StubKvs()), loop, thread
+        )
+        with dev.recording(units="raw") as cap:
+            # The user's thread is free here; post notifications onto the
+            # facade loop the way bleak would.
+            for _ in range(200):
+                if client.notify is not None:
+                    break
+                time.sleep(0.001)
+            loop.call_soon_threadsafe(
+                client.notify, None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]])
+            )
+            for _ in range(200):
+                if cap.rows:
+                    break
+                time.sleep(0.001)
+            assert cap.rows == 2
+            time.sleep(0)  # the with-body owned the main thread throughout
+        assert cap.recording is not None
+        assert np.array_equal(cap.recording.raw, [[1, 2, 3, 4], [5, 6, 7, 8]])
+        assert not dev._async._active
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()

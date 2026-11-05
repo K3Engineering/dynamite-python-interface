@@ -1,6 +1,7 @@
 """Feed decoding and packet streaming, driven through a fake BLE transport."""
 
 import asyncio
+import threading
 import time
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 
 from dynamite_sampler.device import (
     AsyncDynamiteSampler,
+    DynamiteSampler,
     SsnUnwrapper,
     _decode_samples,
 )
@@ -361,3 +363,46 @@ async def test_second_stream_while_active_raises():
     pending.cancel()
     with pytest.raises(asyncio.CancelledError):
         await pending
+
+
+class _StubAsync:
+    class _kvs:
+        factory = user = settings = None
+
+    kvs = _kvs()
+
+
+def _sync_facade():
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    return DynamiteSampler(_StubAsync(), loop, thread), loop, thread
+
+
+def _stop_facade(loop, thread):
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join()
+    loop.close()
+
+
+def test_sync_run_preserves_timeouterror_subclass():
+    dev, loop, thread = _sync_facade()
+    try:
+
+        async def boom():
+            raise ReadTimeout("nope")
+
+        with pytest.raises(ReadTimeout):
+            dev._run(boom())
+    finally:
+        _stop_facade(loop, thread)
+
+
+def test_sync_run_after_close_raises():
+    dev, loop, thread = _sync_facade()
+    try:
+        dev._loop = None
+        with pytest.raises(DynamiteError, match="closed"):
+            dev._run(None)
+    finally:
+        _stop_facade(loop, thread)

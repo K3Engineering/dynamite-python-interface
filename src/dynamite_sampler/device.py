@@ -1,9 +1,12 @@
 """The Dynamite Sampler device classes."""
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import datetime
+import threading
 import time
+from collections.abc import Set as AbstractSet
 
 import bleak
 import numpy as np
@@ -37,6 +40,7 @@ UNCONFIGURED = "UNCONFIGURED"
 
 QUEUE_SECONDS = 4
 DEFAULT_READ_TIMEOUT_S = 5.0
+_RUN_POLL_S = 0.25
 
 _SAMPLE_BYTES = DynamiteSamplerService.ADCFeed.SAMPLE_BYTES
 _CHANNELS_PER_SAMPLE = _SAMPLE_BYTES // 3
@@ -594,3 +598,220 @@ def _packet_parts(packet: Packet):
     if packet.rows_dropped:
         yield np.full((packet.rows_dropped, packet.raw.shape[1]), np.nan)
     yield packet.raw
+
+
+def _block_on(coro, loop):
+    """Run a coroutine on the facade loop and block interruptibly."""
+    holder = []
+
+    async def runner():
+        task = asyncio.ensure_future(coro)
+        holder.append(task)
+        return await task
+
+    fut = asyncio.run_coroutine_threadsafe(runner(), loop)
+    while True:
+        try:
+            return fut.result(timeout=_RUN_POLL_S)
+        except concurrent.futures.TimeoutError:
+            if fut.done():
+                raise
+        except KeyboardInterrupt:
+            loop.call_soon_threadsafe(
+                lambda: holder[0].cancel() if holder else fut.cancel()
+            )
+            try:
+                fut.result()
+            except BaseException:
+                pass
+            raise
+
+
+class _SyncNamespace:
+    def __init__(self, dev, namespace):
+        self._dev = dev
+        self._ns = namespace
+
+    def get(self, key: str) -> str:
+        return self._dev._run(self._ns.get(key))
+
+    def set(self, key: str, value: str) -> str:
+        return self._dev._run(self._ns.set(key, value))
+
+    def set_many(self, entries: dict[str, str]) -> None:
+        return self._dev._run(self._ns.set_many(entries))
+
+    def set_group(
+        self, entries: dict[str, str], marker: str, group_keys: AbstractSet[str]
+    ) -> None:
+        return self._dev._run(self._ns.set_group(entries, marker, group_keys))
+
+    def delete(self, key: str) -> None:
+        return self._dev._run(self._ns.delete(key))
+
+    def keys(self) -> list[str]:
+        return self._dev._run(self._ns.keys())
+
+    def read_all(self) -> dict[str, str]:
+        return self._dev._run(self._ns.read_all())
+
+
+class _SyncKvs:
+    def __init__(self, dev):
+        self._dev = dev
+        self.factory = _SyncNamespace(dev, dev._async.kvs.factory)
+        self.user = _SyncNamespace(dev, dev._async.kvs.user)
+        self.settings = _SyncNamespace(dev, dev._async.kvs.settings)
+
+    def read_all(self) -> dict[str, dict[str, str]]:
+        return self._dev._run(self._dev._async.kvs.read_all())
+
+    def get_device_name(self) -> str | None:
+        return self._dev._run(self._dev._async.kvs.get_device_name())
+
+
+class DynamiteSampler:
+    """Synchronous facade over :class:`AsyncDynamiteSampler`."""
+
+    def __init__(
+        self,
+        async_dev: AsyncDynamiteSampler,
+        loop: asyncio.AbstractEventLoop,
+        thread: threading.Thread,
+    ):
+        self._async = async_dev
+        self._loop = loop
+        self._thread = thread
+        self.kvs = _SyncKvs(self)
+
+    @classmethod
+    def connect(cls, address=None):
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            async_dev = _block_on(AsyncDynamiteSampler.connect(address), loop)
+        except BaseException:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join()
+            loop.close()
+            raise
+        return cls(async_dev, loop, thread)
+
+    def _run(self, coro):
+        if self._loop is None:
+            raise DynamiteError("device is closed")
+        return _block_on(coro, self._loop)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def close(self):
+        if self._loop is None:
+            return
+        loop = self._loop
+        try:
+            self._run(self._async.close())
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            self._thread.join()
+            loop.close()
+            self._loop = None
+
+    @property
+    def info(self) -> DeviceInfo:
+        return self._async.info
+
+    @property
+    def sample_rate(self) -> int | None:
+        return self._async.sample_rate
+
+    @property
+    def gains(self) -> list[int] | None:
+        return self._async.gains
+
+    def read_calibration(self) -> Calibration:
+        return self._run(self._async.read_calibration())
+
+    def read_tx_power_dbm(self) -> int | None:
+        return self._run(self._async.read_tx_power_dbm())
+
+    def set_tx_power(self, dbm: int) -> int:
+        return self._run(self._async.set_tx_power(dbm))
+
+    def read(
+        self,
+        n: int | None = None,
+        *,
+        seconds: float | None = None,
+        units: Unit = "raw",
+        calibration: Calibration | None = None,
+        tare_raw=None,
+        timeout: float = DEFAULT_READ_TIMEOUT_S,
+    ) -> Recording:
+        return self._run(
+            self._async.read(
+                n,
+                seconds=seconds,
+                units=units,
+                calibration=calibration,
+                tare_raw=tare_raw,
+                timeout=timeout,
+            )
+        )
+
+    def tare(self, n: int | None = None):
+        return self._run(self._async.tare(n))
+
+    def recording(
+        self,
+        units: Unit = "raw",
+        path=None,
+        calibration: Calibration | None = None,
+        tare_raw=None,
+    ) -> "Capture":
+        return Capture(self, self._async.recording(units, path, calibration, tare_raw))
+
+    def _iter_async(self, agen):
+        try:
+            while True:
+                try:
+                    yield self._run(agen.__anext__())
+                except StopAsyncIteration:
+                    return
+        finally:
+            if self._loop is not None:
+                self._run(agen.aclose())
+
+    def stream(self, inactivity_timeout: float | None = None):
+        return self._iter_async(self._async.stream(inactivity_timeout))
+
+
+class Capture:
+    """Synchronous wrapper for an :class:`AsyncCapture` on the facade loop."""
+
+    def __init__(self, dev, async_capture):
+        self._dev = dev
+        self._capture = async_capture
+
+    @property
+    def rows(self) -> int:
+        return self._capture.rows
+
+    @property
+    def recording(self) -> Recording | None:
+        return self._capture.recording
+
+    def stop(self) -> None:
+        self._dev._run(self._capture.stop())
+
+    def __enter__(self) -> "Capture":
+        self._dev._run(self._capture.__aenter__())
+        return self
+
+    def __exit__(self, *exc):
+        self._dev._run(self._capture.__aexit__(*exc))
+        return False
