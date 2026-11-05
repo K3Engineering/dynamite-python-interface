@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-import dynamite_sampler.kvs as dynamite_sampler_kvs
+import dynamite_sampler.kvs as kvs_module
 from dynamite_sampler.kvs import (
     KvsBusy,
     KvsClient,
@@ -44,7 +44,7 @@ def make_client(responder=None):
 
 @pytest.fixture
 def short_timeout(monkeypatch):
-    monkeypatch.setattr(dynamite_sampler_kvs, "_COMMAND_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(kvs_module, "_COMMAND_TIMEOUT_S", 0.05)
 
 
 def test_timeout_raises_kvs_timeout(short_timeout):

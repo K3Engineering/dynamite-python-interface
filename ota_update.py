@@ -67,14 +67,14 @@ async def send_ota(device_name: str, firmware_bin: bytes):
                 await queue.put("ack2")
                 try:
                     await client.stop_notify(OTA_CONTROL_UUID)
-                except:
+                except Exception:
                     print("I think the connection died?")
             elif data == SVR_CHR_OTA_CONTROL_DONE_NAK:
                 print("ESP32: OTA done NOT acknowledged.")
                 await queue.put("nak2")
                 try:
                     await client.stop_notify(OTA_CONTROL_UUID)
-                except:
+                except Exception:
                     print("I think the connection died?")
             else:
                 print(f"Notification received: sender: {sender}, data: {data}")
@@ -124,7 +124,7 @@ async def send_ota(device_name: str, firmware_bin: bytes):
             # await asyncio.sleep(1)
             print("Waiting for confirmation...")
             if await queue.get() == "ack2":
-                print(f"OTA successful!")
+                print("OTA successful!")
             else:
                 print("OTA failed.")
 

@@ -15,10 +15,14 @@ dependencies = [
 test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "black==26.10.1",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.black]
+line-length = 88
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
