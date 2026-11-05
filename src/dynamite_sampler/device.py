@@ -40,6 +40,9 @@ UNCONFIGURED = "UNCONFIGURED"
 
 QUEUE_SECONDS = 4
 DEFAULT_READ_TIMEOUT_S = 5.0
+
+# Poll granularity of the sync facade's wait, so Ctrl+C lands promptly on
+# Windows (concurrent.futures ``Future.result()`` is not interruptible).
 _RUN_POLL_S = 0.25
 
 _SAMPLE_BYTES = DynamiteSamplerService.ADCFeed.SAMPLE_BYTES
@@ -431,11 +434,17 @@ class AsyncDynamiteSampler:
         calibration: Calibration | None = None,
         tare_raw=None,
     ) -> "AsyncCapture":
-        """Capture packets in the background until the context exits.
+        """An open-ended background capture, as an async context manager.
 
-        With ``path``, packets stream to CSV and the recording is read back
-        from that file. Without a path, packets accumulate in memory. Normal
-        exit, early stop, and exceptions all finalize the received data.
+        With ``path`` packets stream through a :class:`CsvRecorder` to disk
+        and never accumulate in memory (hours-long runs; a crash still
+        leaves a valid, flushed file), and the :class:`Recording` is loaded
+        back from the file on exit. Without a path they accumulate in memory
+        — the bounded-capture form. On exit (or ``stop()``) the partial data
+        is finalized into :attr:`AsyncCapture.recording`, including on an
+        exception in the body: a Ctrl+C ends the capture, it does not lose
+        it. An acquisition failure mid-capture (:class:`ConnectionLost`,
+        :class:`BufferOverrun`) finalizes what arrived and re-raises on exit.
         """
         self._require_adc()
         if calibration is not None:
@@ -468,11 +477,15 @@ class AsyncDynamiteSampler:
 
 
 class AsyncCapture:
-    """An open-ended asynchronous capture.
+    """The async context manager returned by
+    :meth:`AsyncDynamiteSampler.recording`.
 
-    ``rows`` counts received samples while running. After exit or ``stop()``,
-    ``recording`` contains the finalized result, or ``None`` if no packets
-    arrived. A path-backed recording is loaded from its CSV file on exit.
+    Yielded on entry; while the capture runs, :attr:`rows` counts samples
+    arrived. After exit (or :meth:`stop`), :attr:`recording` holds the
+    finalized :class:`Recording` (``None`` only if nothing arrived). A
+    path-backed recording is loaded back from its own file — the same shape
+    ``read_csv`` returns: ``host_time`` is NaN and ``data`` is the file's
+    fixed-point conversion.
     """
 
     def __init__(self, dev, units, path, calibration, tare_raw):
@@ -493,6 +506,7 @@ class AsyncCapture:
 
     @property
     def rows(self) -> int:
+        """Samples captured so far."""
         return self._rows
 
     async def __aenter__(self) -> "AsyncCapture":
@@ -607,7 +621,11 @@ def _packet_parts(packet: Packet):
 
 
 def _block_on(coro, loop):
-    """Run a coroutine on the facade loop and block interruptibly."""
+    """Run ``coro`` on ``loop`` (another thread) and block, interruptibly.
+
+    ``Future.result()`` is a lock acquire and is not interruptible on
+    Windows; polling lets Ctrl+C land, and cancelling the *task* (not just
+    the cross-thread future) runs the coroutine's finally blocks."""
     holder = []
 
     async def runner():
@@ -620,12 +638,17 @@ def _block_on(coro, loop):
         try:
             return fut.result(timeout=_RUN_POLL_S)
         except concurrent.futures.TimeoutError:
+            # The wait timed out iff the future is not done. If it is done,
+            # the coroutine raised a TimeoutError subclass
+            # (ReadTimeout/KvsTimeout): deliver that.
             if fut.done():
                 raise
         except KeyboardInterrupt:
             loop.call_soon_threadsafe(
                 lambda: holder[0].cancel() if holder else fut.cancel()
             )
+            # Wait for the cancellation's finally blocks to run, so the
+            # device is left idle, then re-raise.
             try:
                 fut.result()
             except BaseException:
@@ -677,7 +700,10 @@ class _SyncKvs:
 
 
 class DynamiteSampler:
-    """Synchronous facade over :class:`AsyncDynamiteSampler`."""
+    """Synchronous facade over :class:`AsyncDynamiteSampler`.
+
+    Runs a private event loop in a daemon thread; one implementation, one
+    place where the math lives."""
 
     def __init__(
         self,
@@ -758,6 +784,8 @@ class DynamiteSampler:
         tare_raw=None,
         timeout: float = DEFAULT_READ_TIMEOUT_S,
     ) -> Recording:
+        """Exactly ``n`` rows (or ``seconds`` of feed), or :class:`ReadTimeout`;
+        the result is a :class:`Recording`."""
         return self._run(
             self._async.read(
                 n,
@@ -779,6 +807,11 @@ class DynamiteSampler:
         calibration: Calibration | None = None,
         tare_raw=None,
     ) -> "Capture":
+        """An open-ended background capture, as a context manager; see
+        :meth:`AsyncDynamiteSampler.recording`. The pump runs on this
+        facade's private loop, so the ``with`` body owns the main thread:
+        drive the rig, wait, plot — a Ctrl+C ends the capture with the
+        partial data intact on :attr:`Capture.recording`."""
         return Capture(self, self._async.recording(units, path, calibration, tare_raw))
 
     def _iter_async(self, agen):
@@ -793,11 +826,21 @@ class DynamiteSampler:
                 self._run(agen.aclose())
 
     def stream(self, inactivity_timeout: float | None = None):
+        """Infinite generator of :class:`Packet`, one per BLE notification.
+
+        The sync form blocks the calling thread between packets. For a
+        background capture use :meth:`recording`; for a GUI event loop use a
+        thread or the async class."""
         return self._iter_async(self._async.stream(inactivity_timeout))
 
 
 class Capture:
-    """Synchronous wrapper for an :class:`AsyncCapture` on the facade loop."""
+    """The context manager returned by :meth:`DynamiteSampler.recording`.
+
+    Wraps the async capture on this facade's loop. ``rows`` counts samples
+    live; ``recording`` is the finalized :class:`Recording` after exit or
+    :meth:`stop` (``None`` when nothing arrived).
+    """
 
     def __init__(self, dev, async_capture):
         self._dev = dev
@@ -812,6 +855,7 @@ class Capture:
         return self._capture.recording
 
     def stop(self) -> None:
+        """End the capture early (idempotent)."""
         self._dev._run(self._capture.stop())
 
     def __enter__(self) -> "Capture":

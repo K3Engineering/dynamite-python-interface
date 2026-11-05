@@ -18,7 +18,9 @@ class ConnectionLost(DynamiteError):
 
 
 class ReadTimeout(DynamiteError, TimeoutError):
-    """A bounded read received no rows within its inactivity timeout."""
+    """A bounded read received no rows within its inactivity timeout.
+
+    Also catchable as the builtin TimeoutError."""
 
 
 class BufferOverrun(DynamiteError):
@@ -26,11 +28,16 @@ class BufferOverrun(DynamiteError):
 
 
 class StreamActive(DynamiteError):
-    """A stream, fixed-size read, or tare is already active on this device."""
+    """A ``stream()``/``read()``/``tare()`` is already active on this device.
+
+    Notifications are started on entry and stopped on exit, so only one feed
+    consumer may run at a time."""
 
 
 class TareError(DynamiteError):
-    """Tare failed because a channel had no valid samples in the window."""
+    """Tare failed: a channel had no valid (non-NaN) samples in the window.
+
+    ``tare_raw`` is left untouched when this is raised."""
 
 
 class UnitUnavailable(DynamiteError):
@@ -45,7 +52,10 @@ class ProtocolError(DynamiteError):
 
 
 class ProvisioningError(DynamiteError):
-    """The device is unconfigured: ADC operations are disabled; KVS still works."""
+    """The device is in safe mode (``UNCONFIGURED``): the ADC is disabled.
+
+    Raised by ``stream()``/``read()``/``tare()``; KVS access still works,
+    which is what provisioning a fresh board needs."""
 
 
 class CalibrationError(DynamiteError):
@@ -53,11 +63,12 @@ class CalibrationError(DynamiteError):
 
     A torn calibration group, mixed/partial channels, invalid ladder data, a
     stale ``cal.adc``, or orphaned calibration keys without their constants.
-    Raised by ``Calibration.from_kvs()``."""
+    Raised by ``read_calibration()``."""
 
 
 class CsvFormatError(DynamiteError):
-    """A recording file is malformed or its conversion inputs are inconsistent."""
+    """A dynamite-csv file is malformed (read) or the recording's inputs are
+    inconsistent (write: a non-contiguous packet, wrong channel count)."""
 
 
 class KvsError(DynamiteError):

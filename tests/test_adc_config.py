@@ -2,10 +2,9 @@
 
 import pytest
 
-from dynamite_sampler.api import ADCConfigData, DynamiteSampler
+from dynamite_sampler.api import ADCConfigData, DynamiteSamplerService
 
-
-ADCConfig = DynamiteSampler.ADCConfig
+ADCConfig = DynamiteSamplerService.ADCConfig
 
 
 def _frame():
