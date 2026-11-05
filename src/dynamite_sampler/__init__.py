@@ -4,6 +4,7 @@ from .errors import (
     ConnectionLost,
     DeviceNotFound,
     DynamiteError,
+    FirmwareCatalogError,
     KvsBusy,
     KvsDeviceError,
     KvsError,
@@ -30,4 +31,5 @@ __all__ = [
     "OtaError",
     "OtaRejected",
     "OtaTimeout",
+    "FirmwareCatalogError",
 ]

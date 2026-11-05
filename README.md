@@ -54,3 +54,18 @@ python ota_update.py -f path/to/firmware.bin "device name"
 
 The protocol client accepts an already-connected Bleak client; the script owns
 device lookup, connection lifetime, and progress reporting.
+
+## Firmware release catalog
+
+The release catalog selects the newest qualifying GitHub release for the
+`stable` or `beta` channel and verifies both image size and SHA-256 before
+flashing:
+
+```powershell
+python ota_update.py --check "device name"
+python ota_update.py --latest "device name"
+python ota_update.py --channel beta --latest "device name"
+```
+
+`--check` reports the installed and target versions without flashing.
+`--latest` downloads, verifies, and flashes the channel target.
