@@ -1,150 +1,99 @@
 #!/usr/bin/env python
-"""Perform BLE OTA update on a Dynamite Sampler board."""
+"""Flash a local firmware image to a Dynamite Sampler over BLE."""
 
 import argparse
 import asyncio
-import datetime
+import sys
+import time
+from pathlib import Path
 
-from bleak import BleakClient, BleakScanner
+import bleak
 from tqdm import tqdm
 
-# TODO factor this out so its not duplicated in the firmware as well
-OTA_DATA_UUID = "09999d81-f1f6-4e31-8946-590220cc99af"
-OTA_CONTROL_UUID = "66815c6b-2b3f-4142-8a0a-bc34644eae01"
+# Run from a checkout without installing the package (kvs_api_shim idiom).
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-SVR_CHR_OTA_CONTROL_REQUEST = bytearray.fromhex("01")
-SVR_CHR_OTA_CONTROL_REQUEST_ACK = bytearray.fromhex("02")
-SVR_CHR_OTA_CONTROL_REQUEST_NAK = bytearray.fromhex("03")
-SVR_CHR_OTA_CONTROL_DONE = bytearray.fromhex("04")
-SVR_CHR_OTA_CONTROL_DONE_ACK = bytearray.fromhex("05")
-SVR_CHR_OTA_CONTROL_DONE_NAK = bytearray.fromhex("06")
+import dynamite_sampler as dms  # noqa: E402
+from dynamite_sampler import discovery  # noqa: E402
+from dynamite_sampler.api import DeviceInformation  # noqa: E402
+from dynamite_sampler.errors import ConnectionLost, DeviceNotFound  # noqa: E402
+from dynamite_sampler.ota import Ota  # noqa: E402
 
 
-async def _search_for_esp32(device_name):
-    print(f"Searching for '{device_name}'...")
-    esp32 = None
+async def _find_by_name(name):
+    """The in-range device advertising ``name``, or :class:`DeviceNotFound`.
 
-    devices_and_adv = await BleakScanner.discover(return_adv=True)
-    print("RSSI, Device name:")
-
-    for device, adv_data in devices_and_adv.values():
-        print(adv_data.rssi, device.name, end="")
-        if device.name == device_name:
-            esp32 = device
-            print(" - device name matches", end="")
-        print("")
-
-    if esp32 is not None:
-        print(f"{device_name} found!")
-    else:
-        print(f"{device_name} has not been found.")
-        assert esp32 is not None
-
-    return esp32
+    ``discover()`` is sorted by RSSI descending, so a duplicated name picks
+    the strongest one."""
+    devices = await discovery.discover()
+    for d in devices:
+        if d.name == name:
+            return d
+    listing = "\n".join(
+        f"  {d.address}  {d.name}  (RSSI {d.rssi} dBm)" for d in devices
+    )
+    raise DeviceNotFound(
+        f"No Dynamite Sampler named {name!r} in range. In range:\n{listing}"
+    )
 
 
-async def send_ota(device_name: str, firmware_bin: bytes):
-    t0 = datetime.datetime.now()
-    queue = asyncio.Queue()
+async def _read_firmware_rev(client):
+    """The DIS Firmware Revision string, or None when unreadable."""
+    try:
+        raw = await client.read_gatt_char(DeviceInformation.FirmwareRevision.UUID)
+    except bleak.exc.BleakCharacteristicNotFoundError:
+        return None
+    return DeviceInformation.FirmwareRevision.unpack(raw)
 
-    def on_disconnected(client):
-        print(datetime.datetime.now(), "Disconnected callback!")
 
-    esp32 = await _search_for_esp32(device_name)
-    async with BleakClient(esp32, disconnected_callback=on_disconnected) as client:
+async def run(args, image) -> None:
+    found = await _find_by_name(args.device_name)
+    print(f"Connecting to {found.name} ({found.address}, {found.rssi} dBm)...")
+    state = {"ota": None}
 
-        async def _ota_notification_handler(sender: int, data: bytearray):
-            print(datetime.datetime.now(), "Notification", end=": ")
-            if data == SVR_CHR_OTA_CONTROL_REQUEST_ACK:
-                print("ESP32: OTA request acknowledged.")
-                await queue.put("ack1")
-            elif data == SVR_CHR_OTA_CONTROL_REQUEST_NAK:
-                print("ESP32: OTA request NOT acknowledged.")
-                await queue.put("nak1")
-                await client.stop_notify(OTA_CONTROL_UUID)
-            elif data == SVR_CHR_OTA_CONTROL_DONE_ACK:
-                print("ESP32: OTA done acknowledged.")
-                await queue.put("ack2")
-                try:
-                    await client.stop_notify(OTA_CONTROL_UUID)
-                except Exception:
-                    print("I think the connection died?")
-            elif data == SVR_CHR_OTA_CONTROL_DONE_NAK:
-                print("ESP32: OTA done NOT acknowledged.")
-                await queue.put("nak2")
-                try:
-                    await client.stop_notify(OTA_CONTROL_UUID)
-                except Exception:
-                    print("I think the connection died?")
-            else:
-                print(f"Notification received: sender: {sender}, data: {data}")
+    def on_disconnect(_client):
+        ota = state["ota"]
+        if ota is not None:
+            ota.fail_pending(ConnectionLost("device disconnected"))
 
-        # subscribe to OTA control
-        await client.start_notify(OTA_CONTROL_UUID, _ota_notification_handler)
+    t0 = time.monotonic()
+    async with bleak.BleakClient(
+        found.address, disconnected_callback=on_disconnect
+    ) as client:
+        rev = await _read_firmware_rev(client)
+        if rev is not None:
+            print(f"Installed: {rev}")
+        ota = await Ota.open(client)
+        state["ota"] = ota
+        try:
+            with tqdm(total=len(image), unit="B", unit_scale=True) as pbar:
+                await ota.flash(
+                    image, on_progress=lambda sent: pbar.update(sent - pbar.n)
+                )
+        finally:
+            await ota.close()
+    print(
+        f"OTA successful; the device is restarting into the new image. "
+        f"Total time: {time.monotonic() - t0:.1f} s"
+    )
 
-        # compute the packet size. 244 bytes is the most a single packet can handle.
-        # Even if the MTU is larger, no need to split the data into multiple packets.
-        packet_size = min(client.mtu_size - 3, 244)
 
-        # request the update: opcode + image size as u32 LE
-        file_size = len(firmware_bin)
-        print(datetime.datetime.now(), f"Sending OTA request, size: {file_size}.")
-        await client.write_gatt_char(
-            OTA_CONTROL_UUID,
-            SVR_CHR_OTA_CONTROL_REQUEST + file_size.to_bytes(4, "little"),
-            response=True,
-        )
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-f", "--file", required=True, help="local firmware .bin image")
+    parser.add_argument("device_name", metavar="device-name")
+    args = parser.parse_args()
 
-        # wait for the response
-        if await queue.get() == "ack1":
-            print("Sending data...")
-            # sequentially write all packets to OTA data
-            num_packages = 0
-            with tqdm(total=len(firmware_bin), unit="bytes") as pbar:
-                for i in range(0, len(firmware_bin), packet_size):
-                    pkg = firmware_bin[i : i + packet_size]
-                    pbar.update(n=len(pkg))
-                    num_packages += 1
-
-                    # Response=True (write request) is primary choice, since the
-                    # OTA handler can't always keep up with the incoming packets. And
-                    # for some reason the LL doesn't stop accepting even if the buffer
-                    # is full.
-                    await client.write_gatt_char(OTA_DATA_UUID, pkg, response=True)
-
-            # write done OP code to OTA Control
-            print("Sending OTA done.")
-            print(f"Number of packages sent: {num_packages}")
-            # response=False has to be set, otherwise it hangs here.
-            await client.write_gatt_char(
-                OTA_CONTROL_UUID, SVR_CHR_OTA_CONTROL_DONE, response=False
-            )
-
-            # wait for the response
-            # await asyncio.sleep(1)
-            print("Waiting for confirmation...")
-            if await queue.get() == "ack2":
-                print("OTA successful!")
-            else:
-                print("OTA failed.")
-
-        else:
-            print("ESP32 did not acknowledge the OTA request.")
-    dt = datetime.datetime.now() - t0
-    print(f"Total time: {dt}")
+    try:
+        with open(args.file, "rb") as f:
+            image = f.read()
+    except OSError as exc:
+        sys.exit(f"Cannot read {args.file}: {exc}")
+    try:
+        asyncio.run(run(args, image))
+    except dms.DynamiteError as exc:
+        sys.exit(str(exc))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.RawDescriptionHelpFormatter, description=__doc__
-    )
-    parser.add_argument(
-        "-f", "--file", default="./build/debug/dynamite-sampler-firmware.bin"
-    )
-    parser.add_argument("device_name", metavar="device-name")
-
-    args = parser.parse_args()
-
-    with open(args.file, "rb") as f:
-        firmware_bin = f.read()
-    asyncio.run(send_ota(args.device_name, firmware_bin))
+    main()
