@@ -1,11 +1,19 @@
 """Dynamite Sampler Python API."""
 
+import asyncio
 import contextlib
 
 from . import discovery as _discovery
 from .calibration import Calibration, LoadCell, Unit
 from .csv_io import CsvRecorder, read_csv
-from .device import UNCONFIGURED, AsyncCapture, AsyncDynamiteSampler, DeviceInfo
+from .device import (
+    UNCONFIGURED,
+    AsyncCapture,
+    AsyncDynamiteSampler,
+    Capture,
+    DeviceInfo,
+    DynamiteSampler,
+)
 from .discovery import FoundDevice
 from .errors import (
     BufferOverrun,
@@ -37,14 +45,18 @@ from .recording import Recording
 __version__ = "0.1.0"
 
 __all__ = [
+    "discover",
     "adiscover",
+    "connect",
     "aconnect",
     "FoundDevice",
+    "DynamiteSampler",
     "AsyncDynamiteSampler",
     "DeviceInfo",
     "UNCONFIGURED",
     "Packet",
     "Recording",
+    "Capture",
     "AsyncCapture",
     "read_csv",
     "Unit",
@@ -81,6 +93,11 @@ async def adiscover(timeout: float = 5.0) -> list[FoundDevice]:
     return await _discovery.discover(timeout)
 
 
+def discover(timeout: float = 5.0) -> list[FoundDevice]:
+    """Synchronous discovery for callers not already running an event loop."""
+    return asyncio.run(_discovery.discover(timeout))
+
+
 @contextlib.asynccontextmanager
 async def aconnect(address: str | FoundDevice | None = None):
     """Connect to one device as an async context manager."""
@@ -89,3 +106,8 @@ async def aconnect(address: str | FoundDevice | None = None):
         yield dev
     finally:
         await dev.close()
+
+
+def connect(address: str | FoundDevice | None = None) -> DynamiteSampler:
+    """Connect to one device through the synchronous facade."""
+    return DynamiteSampler.connect(address)
