@@ -37,6 +37,22 @@ state. `dev.stream()` yields raw counts; `dev.read()` lays dropped samples
 into the returned timeline as NaN rows. `dms.read_csv(path)` reads recordings
 without a device.
 
+### Open-ended asynchronous capture
+
+`dev.recording()` captures in a background task until its context exits or
+`stop()` is called. Received data is finalized even when the context body
+raises. With a path, packets stream directly to CSV and the final recording
+is read back from that file; without one, packets accumulate in memory:
+
+```python
+async with dev.recording(units="raw", path="session.csv") as capture:
+    await operate_rig()
+recording = capture.recording
+```
+
+An acquisition error such as connection loss is re-raised after finalizing
+the partial recording.
+
 ## Script to stream data to various sources `stream.py`
 
 This script implements various streaming sinks:

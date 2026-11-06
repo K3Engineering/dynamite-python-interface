@@ -9,7 +9,7 @@ import bleak
 import numpy as np
 
 from .calibration import Calibration, Unit
-from .csv_io import _GENERATOR, device_metadata
+from .csv_io import _GENERATOR, CsvRecorder, device_metadata, read_csv
 from .discovery import find_single
 from .errors import (
     BufferOverrun,
@@ -227,14 +227,15 @@ class AsyncDynamiteSampler:
             )
         return readback
 
-    async def stream(self, inactivity_timeout: float | None = None):
+    async def stream(self, inactivity_timeout: float | None = None, *, _stop=None):
         """Infinite async generator of :class:`Packet`: one item per BLE
         notification, in raw counts.
 
         ``rows_dropped`` counts the samples lost since the previous packet,
         so the sample timeline is those rows then ``raw``.
         ``inactivity_timeout`` raises :class:`ReadTimeout` after that many
-        seconds without a packet.
+        seconds without a packet. The private ``_stop`` event stops
+        notifications and drains already-queued packets before returning.
         """
         config = self._require_adc()
         if self._active:
@@ -244,19 +245,41 @@ class AsyncDynamiteSampler:
         num_channels = len(config.gains)
         queue = asyncio.Queue(maxsize=config.sample_rate * QUEUE_SECONDS)
         overrun = None
+        accepting = True
         disc = asyncio.ensure_future(self._disconnected.wait())
+        stop_wait = None if _stop is None else asyncio.ensure_future(_stop.wait())
         started = False
 
         def on_notify(_sender, data):
             nonlocal overrun
-            if overrun is not None:
+            if not accepting or overrun is not None:
                 return
             try:
                 queue.put_nowait(bytes(data))
             except asyncio.QueueFull:
                 overrun = BufferOverrun("consumer slower than the feed")
 
+        def stop_accepting(_task):
+            nonlocal accepting
+            accepting = False
+
+        if stop_wait is not None:
+            stop_wait.add_done_callback(stop_accepting)
+
         unwrapper = SsnUnwrapper()
+
+        def make_packet(data):
+            ssn, payload = DynamiteSamplerService.ADCFeed.split(data)
+            raw = _decode_samples(payload, num_channels)
+            unwrapped, missed = unwrapper.unwrap(ssn, raw.shape[0])
+            return Packet(
+                time=time.monotonic(),
+                ssn=unwrapped,
+                rows_dropped=missed,
+                payload_bytes=len(data),
+                raw=raw,
+            )
+
         try:
             await self._client.start_notify(
                 DynamiteSamplerService.ADCFeed.UUID, on_notify
@@ -266,21 +289,27 @@ class AsyncDynamiteSampler:
                 if overrun is not None:
                     raise overrun
                 try:
-                    data = await self._wait_packet(queue, disc, inactivity_timeout)
+                    data = await self._wait_packet(
+                        queue, disc, inactivity_timeout, stop_wait
+                    )
                 except asyncio.TimeoutError:
                     raise ReadTimeout(f"no rows for {inactivity_timeout} s") from None
-                ssn, payload = DynamiteSamplerService.ADCFeed.split(data)
-                raw = _decode_samples(payload, num_channels)
-                unwrapped, missed = unwrapper.unwrap(ssn, raw.shape[0])
-                yield Packet(
-                    time=time.monotonic(),
-                    ssn=unwrapped,
-                    rows_dropped=missed,
-                    payload_bytes=len(data),
-                    raw=raw,
-                )
+                if data is None:
+                    accepting = False
+                    if self._client.is_connected:
+                        await self._client.stop_notify(
+                            DynamiteSamplerService.ADCFeed.UUID
+                        )
+                    started = False
+                    while not queue.empty():
+                        yield make_packet(queue.get_nowait())
+                    return
+                yield make_packet(data)
         finally:
+            accepting = False
             disc.cancel()
+            if stop_wait is not None:
+                stop_wait.cancel()
             try:
                 if started and self._client.is_connected:
                     await self._client.stop_notify(DynamiteSamplerService.ADCFeed.UUID)
@@ -385,12 +414,36 @@ class AsyncDynamiteSampler:
             timeout=timeout,
         )
 
-    async def _wait_packet(self, queue, disc, timeout):
-        """The next queued packet, or raise ConnectionLost / asyncio.TimeoutError."""
+    def recording(
+        self,
+        units: Unit = "raw",
+        path=None,
+        calibration: Calibration | None = None,
+        tare_raw=None,
+    ) -> "AsyncCapture":
+        """Capture packets in the background until the context exits.
+
+        With ``path``, packets stream to CSV and the recording is read back
+        from that file. Without a path, packets accumulate in memory. Normal
+        exit, early stop, and exceptions all finalize the received data.
+        """
+        self._require_adc()
+        if calibration is not None:
+            calibration.check_units(units)
+        return AsyncCapture(self, units, path, calibration, tare_raw)
+
+    async def _wait_packet(self, queue, disc, timeout, stop=None):
+        """The next queued packet, or raise ConnectionLost / asyncio.TimeoutError.
+
+        Return None when the optional capture stop event is set.
+        """
         get = asyncio.ensure_future(queue.get())
+        waiters = {get, disc}
+        if stop is not None:
+            waiters.add(stop)
         try:
             done, _ = await asyncio.wait(
-                {get, disc}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
         finally:
             if not get.done():
@@ -399,7 +452,141 @@ class AsyncDynamiteSampler:
             return get.result()
         if disc in done:
             raise ConnectionLost("device disconnected mid-stream")
+        if stop is not None and stop in done:
+            return None
         raise asyncio.TimeoutError
+
+
+class AsyncCapture:
+    """An open-ended asynchronous capture.
+
+    ``rows`` counts received samples while running. After exit or ``stop()``,
+    ``recording`` contains the finalized result, or ``None`` if no packets
+    arrived. A path-backed recording is loaded from its CSV file on exit.
+    """
+
+    def __init__(self, dev, units, path, calibration, tare_raw):
+        self._dev = dev
+        self._units = units
+        self._path = path
+        self._calibration = calibration
+        self._tare_raw = None if tare_raw is None else np.array(tare_raw)
+        self._raw = []
+        self._rows = 0
+        self._recorder = None
+        self._task = None
+        self._stop = None
+        self._finish_task = None
+        self._frozen = None
+        self._finalized = False
+        self.recording: Recording | None = None
+
+    @property
+    def rows(self) -> int:
+        return self._rows
+
+    async def __aenter__(self) -> "AsyncCapture":
+        dev = self._dev
+        config = dev._require_adc()
+        calibration = self._calibration
+        if calibration is None and self._units != "raw":
+            calibration = await dev.read_calibration()
+        if calibration is not None:
+            calibration.check_units(self._units)
+        else:
+            calibration = Calibration.from_kvs({}, config.gains)
+        self._frozen = (
+            calibration,
+            self._tare_raw,
+            config.sample_rate,
+            datetime.datetime.now().astimezone(),
+            device_metadata(dev.info, config.gains, calibration),
+        )
+        if self._path is not None:
+            self._recorder = CsvRecorder(
+                dev,
+                self._path,
+                units=self._units,
+                calibration=calibration,
+                tare_raw=self._tare_raw,
+            )
+        self._stop = asyncio.Event()
+        self._task = asyncio.ensure_future(self._pump())
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self._finish(exc)
+        return False
+
+    async def stop(self) -> None:
+        """End the capture early (finalizes like a normal exit; idempotent)."""
+        await self._finish(None)
+
+    async def _pump(self):
+        async for packet in self._dev.stream(_stop=self._stop):
+            if self._recorder is not None:
+                self._recorder.write(packet)
+            else:
+                self._raw.append(packet)
+            self._rows += packet.rows
+
+    async def _finalize(self):
+        """Stop the pump by draining its stream, then build the recording."""
+        error = None
+        task = self._task
+        if task is not None:
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    # The finalizer itself was cancelled. Keep the pump and
+                    # recorder handles so a later stop() can retry cleanup.
+                    raise
+            except Exception as err:  # the feed died mid-capture
+                error = err
+        try:
+            if self._recorder is not None:
+                recorder, self._recorder = self._recorder, None
+                recorder.close()
+                if self._rows:
+                    self.recording = await asyncio.to_thread(read_csv, self._path)
+            elif self._raw:
+                self.recording = self._join()
+        except Exception as err:
+            if error is None:
+                error = err
+        self._task = None
+        self._finalized = True
+        return error
+
+    async def _finish(self, body_exc):
+        if self._finish_task is None or self._finish_task.cancelled():
+            self._stop.set()
+            self._finish_task = asyncio.ensure_future(self._finalize())
+        # Cancelling a stop() waiter must not cancel the shared finalizer.
+        error = await asyncio.shield(self._finish_task)
+        if body_exc is None and error is not None:
+            raise error
+
+    def _join(self) -> Recording:
+        calibration, tare, sample_rate, recorded_at, device_meta = self._frozen
+        raw = np.concatenate(
+            [part for packet in self._raw for part in _packet_parts(packet)]
+        )
+        return Recording(
+            data=calibration.convert(raw, self._units, tare),
+            raw=raw,
+            t=np.arange(raw.shape[0]) / sample_rate,
+            ssn0=self._raw[0].ssn,
+            units=self._units,
+            host_time=self._raw[0].time,
+            sample_rate=sample_rate,
+            calibration=calibration,
+            tare_raw=tare,
+            recorded_at=recorded_at,
+            device=device_meta,
+            generator=_GENERATOR,
+        )
 
 
 def _packet_parts(packet: Packet):
