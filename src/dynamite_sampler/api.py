@@ -193,3 +193,12 @@ class DeviceInformation(BLEService):
         @staticmethod
         def unpack(b: bytearray | bytes) -> str:
             return bytes(b).rstrip(b"\x00").decode("utf-8")
+
+    class SoftwareRevision(BLECharacteristic):
+        """ESP-IDF build version, e.g. 'ESP-IDF v6.1'."""
+
+        UUID = "2A28"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")

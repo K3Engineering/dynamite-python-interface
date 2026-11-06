@@ -58,6 +58,8 @@ class DeviceInfo:
     manufacturer: str | None
     model_number: str | None = None
     serial: str | None = None
+    # TODO(compat): Make mandatory once deployed units have Software Revision.
+    framework: str | None = None
 
 
 async def _read_characteristic(client, cls):
@@ -157,6 +159,9 @@ class AsyncDynamiteSampler:
                 client, DeviceInformation.ModelNumber
             )
             serial = await _read_characteristic(client, DeviceInformation.SerialNumber)
+            framework = await _read_characteristic(
+                client, DeviceInformation.SoftwareRevision
+            )
             info = DeviceInfo(
                 found.address,
                 found.name,
@@ -165,6 +170,7 @@ class AsyncDynamiteSampler:
                 manufacturer,
                 model_number,
                 serial,
+                framework,
             )
             adc_config = None
             if board_model != UNCONFIGURED:

@@ -92,6 +92,7 @@ def device_metadata(info, gains, calibration: Calibration | None) -> dict:
         "model": None if info is None else info.model_number,
         "hardware_rev": None if info is None else info.board_model,
         "firmware": None if info is None else info.firmware,
+        "framework": None if info is None else info.framework,
         "manufacturer": None if info is None else info.manufacturer,
         "afe": {
             "adc_ref_v": None if nominals is None else nominals.adc_fsr_v,

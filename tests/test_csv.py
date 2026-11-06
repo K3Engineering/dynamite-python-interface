@@ -44,6 +44,7 @@ EXAMPLE_METADATA = {
         "model": "Dynamite Sampler Pro Mk1",
         "hardware_rev": "v700P",
         "firmware": "v700P|v1.2.0-3-gdeadbee",
+        "framework": "ESP-IDF v6.1",
         "manufacturer": "K3 Engineering",
         "afe": {
             "adc_ref_v": 1.2,
@@ -107,7 +108,7 @@ _EXAMPLE_JSON = (
     ',"sample_rate_hz":1000,"ssn_origin":41230,"converted_unit":"kgf","device"'
     ':{"name":"DS A4CF1208F51E","id":"A4CF1208F51E","model":"Dynamite Sampler'
     ' Pro Mk1","hardware_rev":"v700P","firmware":"v700P|v1.2.0-3-gdeadbee"'
-    ',"manufacturer":"K3 Engineering","afe":{"adc_ref_v":1.2,"front_end_gain"'
+    ',"framework":"ESP-IDF v6.1","manufacturer":"K3 Engineering","afe":{"adc_ref_v":1.2,"front_end_gain"'
     ':101.0,"adc_gain":[1.0,1.0,1.0,1.0],"excitation_v":4.53},"kvs":{"factory"'
     ':{"adc_fsr":"1.2,nominal","afe_gain":"101,nominal","cal.adc":"1,1,1,1"'
     ',"cal.board":"CB42 v1.0.3","cal.date":"2026-06-14","cal.origin":"factory"'
@@ -140,6 +141,7 @@ _EXAMPLE_YAML = """\
 #   model: 'Dynamite Sampler Pro Mk1'
 #   hardware_rev: 'v700P'
 #   firmware: 'v700P|v1.2.0-3-gdeadbee'
+#   framework: 'ESP-IDF v6.1'
 #   manufacturer: 'K3 Engineering'
 #   afe:
 #     adc_ref_v: 1.2
@@ -305,6 +307,7 @@ class _FakeDev:
             name="DS AABBCCDDEEFF",
             board_model="v700P",
             firmware="v700P|v1.0.0",
+            framework="ESP-IDF v6.1",
             manufacturer="K3 Engineering",
             model_number="Dynamite Sampler Pro Mk1",
             serial="AABBCCDDEEFF",
@@ -591,6 +594,7 @@ def _app_metadata(unit, channels, afe=_AFE):
             "model": "Dynamite Sampler Pro Mk1",
             "hardware_rev": "v700P",
             "firmware": "v700P|v1.2.0-3-gdeadbee",
+            "framework": "ESP-IDF v6.1",
             "manufacturer": "K3 Engineering",
             "afe": afe,
             "kvs": None,

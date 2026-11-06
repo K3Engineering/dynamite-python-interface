@@ -11,7 +11,7 @@ import pytest
 
 import dynamite_sampler as dms
 from dynamite_sampler.calibration import Calibration
-from dynamite_sampler.csv_io import read_csv
+from dynamite_sampler.csv_io import device_metadata, read_csv
 from dynamite_sampler.errors import ConnectionLost
 from dynamite_sampler.recording import Recording
 
@@ -61,6 +61,7 @@ def _recording(units="kgf", tare_raw=_TARE):
             "model": None,
             "hardware_rev": "v700P",
             "firmware": None,
+            "framework": None,
             "manufacturer": None,
             "afe": {
                 "adc_ref_v": 1.2,
@@ -72,6 +73,19 @@ def _recording(units="kgf", tare_raw=_TARE):
         },
         generator="dynamite-sampler-py test",
     )
+
+
+def test_device_metadata_includes_framework_revision():
+    info = dms.DeviceInfo(
+        address="AA:BB:CC:DD:EE:FF",
+        name="DS TEST",
+        board_model="v700P",
+        firmware="v1.2.3",
+        manufacturer="K3 Engineering",
+        framework="ESP-IDF v6.1",
+    )
+
+    assert device_metadata(info, [1], None)["framework"] == "ESP-IDF v6.1"
 
 
 def test_to_csv_read_csv_round_trip(tmp_path):

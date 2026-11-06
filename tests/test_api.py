@@ -2,11 +2,17 @@ import pytest
 
 from dynamite_sampler.api import (
     ADCConfigData,
+    DeviceInformation,
     DynamiteSamplerService,
     TxPower,
     TxPowerLevel,
 )
 from dynamite_sampler.errors import ProtocolError
+
+
+def test_software_revision_unpacks_esp_idf_version():
+    assert DeviceInformation.SoftwareRevision.UUID == "2A28"
+    assert DeviceInformation.SoftwareRevision.unpack(b"ESP-IDF v6.1") == "ESP-IDF v6.1"
 
 
 def test_adc_feed_split():
