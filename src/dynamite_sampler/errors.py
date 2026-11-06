@@ -17,6 +17,22 @@ class ConnectionLost(DynamiteError):
     """The BLE link dropped (mid-stream, or during a command)."""
 
 
+class ReadTimeout(DynamiteError, TimeoutError):
+    """A bounded read received no rows within its inactivity timeout."""
+
+
+class BufferOverrun(DynamiteError):
+    """The consumer is slower than the feed and the internal queue filled."""
+
+
+class StreamActive(DynamiteError):
+    """A stream, fixed-size read, or tare is already active on this device."""
+
+
+class TareError(DynamiteError):
+    """Tare failed because a channel had no valid samples in the window."""
+
+
 class UnitUnavailable(DynamiteError):
     """The requested unit cannot be produced on every channel.
 
@@ -24,8 +40,12 @@ class UnitUnavailable(DynamiteError):
     needs a load cell in every channel's slot. `raw` always converts."""
 
 
+class ProtocolError(DynamiteError):
+    """Wire-level break: a malformed frame or an unparseable ADC config."""
+
+
 class ProvisioningError(DynamiteError):
-    """The requested operation needs a provisioned, enabled ADC."""
+    """The device is unconfigured: ADC operations are disabled; KVS still works."""
 
 
 class CalibrationError(DynamiteError):
