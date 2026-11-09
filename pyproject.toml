@@ -9,6 +9,7 @@ description = "Python interface for the Dynamite Sampler load cell interface"
 requires-python = ">=3.11"
 dependencies = [
     "bleak>=0.21",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
