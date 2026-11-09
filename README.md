@@ -2,87 +2,83 @@
 
 Python interface for the Dynamite sampler board.
 
-## Bleak utility
+## Library `dynamite_sampler`
 
-A Bleak implementation that uses the `bleak` library to connect to the dynamite sampler,
-and streams that data to call back classes.
+A Bleak library for the Dynamite sampler. The device object is a thin,
+stateless handle on the hardware; the measurements and their conversion
+inputs are values you hold and pass.
 
-## Asynchronous device acquisition
+Three entry points:
 
-`aconnect()` connects to the only device in range, or to a supplied address.
-The device streams raw `Packet` values and reads fixed-size windows as
-self-describing `Recording` values:
+- **Files** (`dms.read_csv(path)`): a recorded `dynamite-csv` file (from the
+  app or this package) as a `Recording` — rows, units, and the calibration
+  rebuilt from the header, so it re-converts and re-tares without a device:
+  `rec.convert("N")`, `rec.to_dataframe()`, `rec.to_csv("out.csv")`.
+- **Captures** (`dev.read(n=..., units=...)`, `dev.recording(...)`): a
+  capture returns that same `Recording`; `dev.recording()` is the open-ended
+  form — a background capture that keeps the partial data when you Ctrl+C.
+  With a `path` it streams every packet to disk and never accumulates in
+  memory (hours-long runs), loading the `Recording` back from the file on
+  exit:
 
-```python
-import asyncio
-import dynamite_sampler as dms
+  ```python
+  import dynamite_sampler as dms
 
-async def acquire():
-    async with dms.aconnect() as dev:
-        calibration = await dev.read_calibration()
-        tare = await dev.tare()
-        recording = await dev.read(
-            seconds=10,
-            units="kgf",
-            calibration=calibration,
-            tare_raw=tare,
-        )
-    recording.to_csv("run.csv")
+  with dms.connect() as dev:
+      calibration = dev.read_calibration()
+      tare = dev.tare()
+      rec = dev.read(
+          seconds=10, units="kgf", calibration=calibration, tare_raw=tare
+      )
+  rec.to_csv("run.csv")
+  ```
+- **Streams** (`dev.stream()`): one `Packet` per BLE notification — rows of
+  raw counts, the unwrapped sample sequence number of the first row, the
+  number of samples lost since the previous packet, arrival time, payload
+  size, and nothing else. That is the layer for per-packet latency,
+  closed-loop control, and link metrics; convert through a `Calibration` you
+  read once up front.
 
-asyncio.run(acquire())
-```
+A fixed window of N samples is what `read()` is for: it collects packets
+until it has the rows you asked for and lays lost samples in as NaN rows, so
+row `i` is always sample `ssn0 + i`.
 
-Calibration and tare are explicit values rather than cached measurement
-state. `dev.stream()` yields raw counts; `dev.read()` lays dropped samples
-into the returned timeline as NaN rows. `dms.read_csv(path)` reads recordings
-without a device.
+### State is explicit
 
-### Open-ended asynchronous capture
+`connect()` reads the identity and ADC characteristics and subscribes to the
+KVS — it does not read the KVS, so a board with unprovisioned, half-written,
+or stale calibration keys still connects, which is what repairing one needs.
 
-`dev.recording()` captures in a background task until its context exits or
-`stop()` is called. Received data is finalized even when the context body
-raises. With a path, packets stream directly to CSV and the final recording
-is read back from that file; without one, packets accumulate in memory:
+Nothing measurement-related is cached on the device:
 
-```python
-async with dev.recording(units="raw", path="session.csv") as capture:
-    await operate_rig()
-recording = capture.recording
-```
+| To get | Call |
+| --- | --- |
+| the calibration | `dev.read_calibration()` (a KVS dump, parsed) |
+| a tare | `dev.tare()` → an ndarray you keep |
+| converted rows | `dev.read(units=..., calibration=..., tare_raw=...)` |
+| raw counts, live | `dev.stream()` |
 
-An acquisition error such as connection loss is re-raised after finalizing
-the partial recording.
+`dev.kvs` is a plain command interface (`read_all()` for a dump,
+`set`/`set_many`/`set_group` for verified writes); a write rebuilds nothing,
+because the library parses KVS strings into a `Calibration` only when asked.
 
-## Synchronous device facade
-
-`connect()` runs the asynchronous implementation on a private event loop and
-provides synchronous reads, tare, streaming, KVS operations, and capture:
-
-```python
-with dms.connect() as dev:
-    calibration = dev.read_calibration()
-    tare = dev.tare()
-    recording = dev.read(
-        seconds=10,
-        units="kgf",
-        calibration=calibration,
-        tare_raw=tare,
-    )
-recording.to_csv("run.csv")
-```
-
-Synchronous `stream()` blocks the calling thread between packets. Open-ended
-`dev.recording()` continues acquisition on the facade loop while the context
-body drives the application.
+The synchronous facade is enough for most scripts, with two notes: the sync
+`stream()` blocks the calling thread (for background acquisition use
+`dev.recording()`, for a GUI event loop use a thread + queue or the async
+class).
 
 ## Script to stream data to various sources `stream.py`
 
 This script implements various streaming sinks:
-- printing metrics to screen.
-- saving data to a `.csv` file.
-- sending it to a socket for to plotted by Waveforms.
+- `--metrics`: live link-health line (packets/sec, bytes/sec, rows/sec,
+  dropped rows).
+- `--tqdm`: a TQDM sample-count bar.
+- `--csv [path]`: record to a dynamite-csv file (default path when no value is
+  given; `--units` selects the converted column).
+- `--socket`: stream to localhost sockets for plotting with Waveforms.
+- `--txpwr N`: set the BLE TX power of the board before streaming.
 
-This script is still in flux and the arguments parsing might change.
+With no flags it runs metrics + socket + CSV recording.
 
 ### Waveforms plotting
 
@@ -97,43 +93,21 @@ Waveforms can be used for real time plotting of the data.
 
 #### Changing units
 
-Currently the script accepts a `JSON` dictionary to pass into the streaming class
-initializer. This allows the user to configure the streaming class to send a scaling
-factor so that the waveforms script can convert the data to other units.
-
-Options are:
-
-- "adc": raw ADC reading
-- "volts_adc_ir": Voltage on the ADC input referenced
-- "volts_opamp_ir": Voltage on the op-amp input referenced
-- "kg_with_opamp": Weight in Kg on the loadcell
+`--conversion` selects the unit conversion the socket sink tells the receiver
+to divide out (one of: `adc`, `volts_adc_ir`, `volts_opamp_ir`).
 
 Example usage:
 
-`python stream.py --metrics --csv --socket '{"conversion":"volts_adc_ir"}'`
+`python stream.py --metrics --csv --socket --conversion volts_adc_ir`
 
-## Local OTA firmware updates
+## Script for OTA firmware updates `ota_update.py`
 
-`ota_update.py` flashes a local firmware image to a board over BLE:
+Flashes a firmware image to a board over BLE.
 
-```powershell
-python ota_update.py -f path/to/firmware.bin "device name"
-```
+`python ota_update.py -f path/to/firmware.bin "device name"` — flash a local image
 
-The protocol client accepts an already-connected Bleak client; the script owns
-device lookup, connection lifetime, and progress reporting.
+`python ota_update.py --check "device name"` — report installed vs channel target
 
-## Firmware release catalog
+`python ota_update.py --latest "device name"` — download, verify (size + SHA-256), and flash the channel target
 
-The release catalog selects the newest qualifying GitHub release for the
-`stable` or `beta` channel and verifies both image size and SHA-256 before
-flashing:
-
-```powershell
-python ota_update.py --check "device name"
-python ota_update.py --latest "device name"
-python ota_update.py --channel beta --latest "device name"
-```
-
-`--check` reports the installed and target versions without flashing.
-`--latest` downloads, verifies, and flashes the channel target.
+`--channel beta` opts `--check`/`--latest` into GitHub prereleases (default: stable).
