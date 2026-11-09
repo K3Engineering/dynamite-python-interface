@@ -43,3 +43,14 @@ Options are:
 Example usage:
 
 `python stream.py --metrics --csv --socket '{"conversion":"volts_adc_ir"}'`
+
+## Local OTA firmware updates
+
+`ota_update.py` flashes a local firmware image to a board over BLE:
+
+```powershell
+python ota_update.py -f path/to/firmware.bin "device name"
+```
+
+The protocol client accepts an already-connected Bleak client; the script owns
+device lookup, connection lifetime, and progress reporting.
