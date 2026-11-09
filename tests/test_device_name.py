@@ -56,14 +56,14 @@ class SetDeviceNameTest(unittest.TestCase):
 
     def test_invalid_names_raise_before_any_write(self):
         invalid = [
-            "",             # empty is a DEL, not a SET
-            " Rack 4",      # outer whitespace
-            "Rack 4 ",      # passes the bare regex — still invalid
-            "Rack\t4",      # control whitespace
-            "x" * 30,       # too long
-            "Räck 4",       # non-ASCII
-            "Rack&4",       # outside the charset
-            "'Rack 4",      # first char must be alphanumeric
+            "",  # empty is a DEL, not a SET
+            " Rack 4",  # outer whitespace
+            "Rack 4 ",  # passes the bare regex — still invalid
+            "Rack\t4",  # control whitespace
+            "x" * 30,  # too long
+            "Räck 4",  # non-ASCII
+            "Rack&4",  # outside the charset
+            "'Rack 4",  # first char must be alphanumeric
         ]
         for name in invalid:
             client = FakeClient()
