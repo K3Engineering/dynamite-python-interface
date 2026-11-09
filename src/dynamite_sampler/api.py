@@ -272,6 +272,15 @@ class DeviceInfo(BLEService):
         def unpack(b: bytearray | bytes) -> str:
             return bytes(b).rstrip(b"\x00").decode("utf-8")
 
+    class SoftwareRevision(BLECharacteristicRead[str]):
+        """ESP-IDF build version, e.g. 'ESP-IDF v6.1'."""
+
+        UUID = "2A28"
+
+        @staticmethod
+        def unpack(b: bytearray | bytes) -> str:
+            return bytes(b).rstrip(b"\x00").decode("utf-8")
+
 
 ## ADC conversion utility functions
 # TODO: Have the function just return the scale factor and not do the converting.
