@@ -53,6 +53,28 @@ recording = capture.recording
 An acquisition error such as connection loss is re-raised after finalizing
 the partial recording.
 
+## Synchronous device facade
+
+`connect()` runs the asynchronous implementation on a private event loop and
+provides synchronous reads, tare, streaming, KVS operations, and capture:
+
+```python
+with dms.connect() as dev:
+    calibration = dev.read_calibration()
+    tare = dev.tare()
+    recording = dev.read(
+        seconds=10,
+        units="kgf",
+        calibration=calibration,
+        tare_raw=tare,
+    )
+recording.to_csv("run.csv")
+```
+
+Synchronous `stream()` blocks the calling thread between packets. Open-ended
+`dev.recording()` continues acquisition on the facade loop while the context
+body drives the application.
+
 ## Script to stream data to various sources `stream.py`
 
 This script implements various streaming sinks:
