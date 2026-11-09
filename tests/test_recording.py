@@ -1,4 +1,4 @@
-"""Recording, CSV round trips, and asynchronous fixed-size reads."""
+"""Recording, read_csv, read(seconds=), and the recording() capture."""
 
 import asyncio
 import datetime
@@ -10,6 +10,7 @@ import pytest
 import dynamite_sampler as dms
 from dynamite_sampler.calibration import Calibration
 from dynamite_sampler.csv_io import device_metadata, read_csv
+from dynamite_sampler.errors import ConnectionLost
 from dynamite_sampler.recording import Recording
 
 from .test_csv import _CELLED_USER, _NOMINAL_FACTORY
@@ -284,3 +285,155 @@ async def test_read_calibration_parses_the_kvs():
     cal = await device.read_calibration()
     assert cal.nominals is not None
     assert not cal.is_calibrated
+
+
+async def test_capture_finalizes_contiguous_recording(tmp_path):
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording(units="raw", path=tmp_path / "cap.csv") as cap:
+        await wait_notify(client)
+        client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+        for _ in range(1000):
+            if cap.rows >= 2:
+                break
+            await asyncio.sleep(0)
+        assert cap.rows == 2
+    recording = cap.recording
+    assert recording is not None
+    assert len(recording) == 2
+    assert np.array_equal(recording.raw, [[1, 2, 3, 4], [5, 6, 7, 8]])
+    assert math.isnan(recording.host_time)  # read back from its own file
+    assert cap._raw == []  # file-first: nothing accumulated in memory
+    assert not device._active
+    from_file = read_csv(tmp_path / "cap.csv")
+    assert np.array_equal(from_file.raw, recording.raw)
+    assert from_file.ssn0 == recording.ssn0
+
+
+async def test_capture_in_memory_keeps_packet_gaps(tmp_path):
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording(units="raw") as cap:
+        await wait_notify(client)
+        client.notify(None, packet(0, [[1, 2, 3, 4]]))
+        client.notify(None, packet(3, [[9, 10, 11, 12]]))  # ssn 1, 2 dropped
+        for _ in range(1000):
+            if cap.rows >= 4:
+                break
+            await asyncio.sleep(0)
+    recording = cap.recording
+    assert len(recording) == 4
+    assert np.isnan(recording.raw[1:3]).all()
+    assert np.array_equal(recording.raw[0], [1, 2, 3, 4])
+    assert np.array_equal(recording.raw[3], [9, 10, 11, 12])
+    assert recording.rows_dropped == 2
+
+
+async def test_capture_stop_is_idempotent():
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording() as cap:
+        await wait_notify(client)
+        client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+        for _ in range(1000):
+            if cap.rows:
+                break
+            await asyncio.sleep(0)
+        await cap.stop()
+        assert cap.recording is not None
+    assert cap.recording is not None
+    assert not device._active
+
+
+async def test_capture_surfaces_link_loss_but_keeps_partial_data():
+    client = FakeClient()
+    disconnected = asyncio.Event()
+    device = make_device(client, disconnected=disconnected)
+    with pytest.raises(ConnectionLost):
+        async with device.recording() as cap:
+            await wait_notify(client)
+            client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+            for _ in range(1000):
+                if cap.rows:
+                    break
+                await asyncio.sleep(0)
+            disconnected.set()
+    assert cap.recording is not None
+    assert len(cap.recording) == 2
+    assert not device._active
+
+
+async def test_capture_body_exception_keeps_data_and_frees_feed():
+    client = FakeClient()
+    device = make_device(client)
+    with pytest.raises(RuntimeError, match="boom"):
+        async with device.recording() as cap:
+            await wait_notify(client)
+            client.notify(None, packet(0, [[1, 2, 3, 4], [5, 6, 7, 8]]))
+            for _ in range(1000):
+                if cap.rows:
+                    break
+                await asyncio.sleep(0)
+            raise RuntimeError("boom")
+    assert cap.recording is not None
+    assert not device._active
+
+
+async def test_capture_with_no_packets_yields_no_recording():
+    client = FakeClient()
+    device = make_device(client)
+    async with device.recording() as cap:
+        await wait_notify(client)
+    assert cap.recording is None
+    assert not device._active
+
+
+@pytest.mark.parametrize("to_csv", [False, True])
+async def test_capture_stop_drains_every_queued_packet(to_csv, tmp_path):
+    client = FakeClient()
+    device = make_device(client)
+    path = tmp_path / "cap.csv" if to_csv else None
+    async with device.recording(units="raw", path=path) as cap:
+        await wait_notify(client)
+        # Queue these synchronously, before the pump gets another loop turn.
+        for ssn in range(20):
+            client.notify(None, packet(ssn, [[ssn, 2, 3, 4]]))
+    assert cap.recording is not None
+    assert len(cap.recording) == 20
+    assert np.array_equal(cap.recording.raw[:, 0], np.arange(20))
+    assert not device._active
+
+
+async def test_cancelling_capture_stop_does_not_orphan_finalization():
+    class BlockingStopClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.stop_started = asyncio.Event()
+            self.allow_stop = asyncio.Event()
+
+        async def stop_notify(self, uuid):
+            self.stop_started.set()
+            await self.allow_stop.wait()
+            await super().stop_notify(uuid)
+
+    client = BlockingStopClient()
+    device = make_device(client)
+    cap = device.recording(units="raw")
+    await cap.__aenter__()
+    await wait_notify(client)
+    client.notify(None, packet(0, [[1, 2, 3, 4]]))
+
+    stopping = asyncio.ensure_future(cap.stop())
+    await client.stop_started.wait()
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+    assert cap._finish_task is not None
+    assert not cap._finish_task.done()
+    assert device._active
+
+    client.allow_stop.set()
+    await cap.stop()
+    assert cap.recording is not None
+    assert len(cap.recording) == 1
+    assert not device._active

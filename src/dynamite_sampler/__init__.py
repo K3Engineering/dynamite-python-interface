@@ -5,7 +5,7 @@ import contextlib
 from . import discovery as _discovery
 from .calibration import Calibration, LoadCell, Unit
 from .csv_io import CsvRecorder, read_csv
-from .device import UNCONFIGURED, AsyncDynamiteSampler, DeviceInfo
+from .device import UNCONFIGURED, AsyncCapture, AsyncDynamiteSampler, DeviceInfo
 from .discovery import FoundDevice
 from .errors import (
     BufferOverrun,
@@ -45,6 +45,7 @@ __all__ = [
     "UNCONFIGURED",
     "Packet",
     "Recording",
+    "AsyncCapture",
     "read_csv",
     "Unit",
     "Calibration",
