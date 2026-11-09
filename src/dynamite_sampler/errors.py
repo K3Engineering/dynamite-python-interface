@@ -24,12 +24,20 @@ class UnitUnavailable(DynamiteError):
     needs a load cell in every channel's slot. `raw` always converts."""
 
 
+class ProvisioningError(DynamiteError):
+    """The requested operation needs a provisioned, enabled ADC."""
+
+
 class CalibrationError(DynamiteError):
     """Board calibration data is present and unusable.
 
     A torn calibration group, mixed/partial channels, invalid ladder data, a
     stale ``cal.adc``, or orphaned calibration keys without their constants.
     Raised by ``Calibration.from_kvs()``."""
+
+
+class CsvFormatError(DynamiteError):
+    """A recording file is malformed or its conversion inputs are inconsistent."""
 
 
 class KvsError(DynamiteError):
